@@ -271,7 +271,7 @@ export default function CarDetailsPage() {
         >
           {car.images && car.images.length > 0 ? (
             <Image
-              source={{ uri: getImageUrl(car.images[selectedImage]) }}
+              source={{ uri: getImageUrl(car.images[selectedImage]) || '' }}
               style={styles.mainImage}
               contentFit="cover"
               transition={200}
@@ -318,7 +318,7 @@ export default function CarDetailsPage() {
                   activeOpacity={0.7}
                 >
                   <Image
-                    source={{ uri: getImageUrl(img) }}
+                    source={{ uri: getImageUrl(img) || '' }}
                     style={styles.thumbnailImage}
                     contentFit="cover"
                   />
@@ -444,9 +444,11 @@ export default function CarDetailsPage() {
             {typeof car.owner === 'object' && car.owner._id && (
               <TouchableOpacity
                 onPress={() => {
-                  const ownerId = car.owner._id;
-                  console.log('Navigating to user:', ownerId);
-                  router.push(`/user/${ownerId}` as any);
+                  const ownerId = typeof car.owner === 'object' ? car.owner._id : null;
+                  if (ownerId) {
+                    console.log('Navigating to user:', ownerId);
+                    router.push(`/user/${ownerId}` as any);
+                  }
                 }}
                 style={styles.ownerContainer}
                 activeOpacity={0.8}
@@ -555,7 +557,7 @@ export default function CarDetailsPage() {
                       <View style={styles.workshopInfoRow}>
                         {workshopImages[appointment.id_workshop._id || appointment.id_workshop.id || appointment.id_workshop] ? (
                           <Image
-                            source={{ uri: getImageUrl(workshopImages[appointment.id_workshop._id || appointment.id_workshop.id || appointment.id_workshop]) }}
+                            source={{ uri: getImageUrl(workshopImages[appointment.id_workshop._id || appointment.id_workshop.id || appointment.id_workshop]) || '' }}
                             style={styles.workshopImage}
                             contentFit="cover"
                           />
@@ -571,7 +573,7 @@ export default function CarDetailsPage() {
                             {appointment.id_workshop.name || 'Atelier'}
                           </ThemedText>
                           {appointment.id_workshop.certifie && (
-                            <View style={styles.certifiedBadge}>
+                            <View style={styles.workshopCertifiedBadge}>
                               <IconSymbol name="checkmark.seal.fill" size={scale(12)} color="#22c55e" />
                               <ThemedText style={styles.certifiedBadgeText}>Certifié</ThemedText>
                             </View>
@@ -1204,7 +1206,7 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#1f2937',
   },
-  certifiedBadge: {
+  workshopCertifiedBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: scale(4),
