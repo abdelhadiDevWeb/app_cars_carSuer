@@ -12,6 +12,7 @@ import {
   Image,
   Platform,
 } from 'react-native';
+import { AppState } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -25,6 +26,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useRouter, useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { io, Socket } from 'socket.io-client';
+import { useTranslation } from 'react-i18next';
 
 const padding = getPadding();
 const fontSizes = getFontSizes();
@@ -40,7 +42,7 @@ interface Car {
   km: number;
   price: number;
   status: CarStatus;
-  images: string[];
+  images?: string[];
   vin?: string;
   color?: string;
   ports?: number;
@@ -78,6 +80,7 @@ interface Workshop {
 
 export default function CarsScreen() {
   const { isAuthenticated, user, isLoading } = useAuth();
+  const { t } = useTranslation();
   const router = useRouter();
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -132,6 +135,9 @@ export default function CarsScreen() {
   const [loadingTimes, setLoadingTimes] = useState(false);
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [selectedDate, setSelectedDate] = useState<Date>(new Date());
+  // Upload modal for image progress on create car
+  const [showUploadModal, setShowUploadModal] = useState(false);
+  const [uploadPercent, setUploadPercent] = useState(0);
   
   // Workshop filters
   const [workshopFilters, setWorkshopFilters] = useState({
@@ -143,25 +149,25 @@ export default function CarsScreen() {
 
   const statusMeta = useMemo(() => {
     const map: Record<string, { label: string; colors: [string, string] }> = {
-      no_proccess: { label: 'Brouillon', colors: ['#64748b', '#475569'] },
-      en_attente: { label: 'En attente', colors: ['#f59e0b', '#d97706'] },
-      actif: { label: 'Certifié', colors: ['#22c55e', '#16a34a'] },
-      vendue: { label: 'Vendue', colors: ['#ef4444', '#dc2626'] },
+      no_proccess: { label: t('cars.status.draft'), colors: ['#64748b', '#475569'] },
+      en_attente: { label: t('cars.status.pending'), colors: ['#f59e0b', '#d97706'] },
+      actif: { label: t('cars.status.certified'), colors: ['#22c55e', '#16a34a'] },
+      vendue: { label: t('cars.status.sold'), colors: ['#ef4444', '#dc2626'] },
     };
     return map;
-  }, []);
+  }, [t]);
 
   const rdvStatusMeta = useMemo(() => {
     const map: Record<string, { label: string; colors: [string, string] }> = {
-      en_attente: { label: 'En attente', colors: ['#f59e0b', '#d97706'] },
-      accepted: { label: 'Accepté', colors: ['#22c55e', '#16a34a'] },
-      refused: { label: 'Refusé', colors: ['#ef4444', '#dc2626'] },
-      start: { label: 'En cours', colors: ['#3b82f6', '#2563eb'] },
-      en_cours: { label: 'En cours', colors: ['#3b82f6', '#2563eb'] }, // Handle en_cours status
-      finish: { label: 'Terminé', colors: ['#64748b', '#475569'] },
+      en_attente: { label: t('cars.rdvStatus.pending'), colors: ['#f59e0b', '#d97706'] },
+      accepted: { label: t('cars.rdvStatus.accepted'), colors: ['#22c55e', '#16a34a'] },
+      refused: { label: t('cars.rdvStatus.refused'), colors: ['#ef4444', '#dc2626'] },
+      start: { label: t('cars.rdvStatus.inProgress'), colors: ['#3b82f6', '#2563eb'] },
+      en_cours: { label: t('cars.rdvStatus.inProgress'), colors: ['#3b82f6', '#2563eb'] }, // Handle en_cours status
+      finish: { label: t('cars.rdvStatus.finished'), colors: ['#64748b', '#475569'] },
     };
     return map;
-  }, []);
+  }, [t]);
 
   // Refresh function for socket updates (doesn't show loading)
   const refreshDataSilently = useCallback(async () => {
@@ -226,7 +232,7 @@ export default function CarsScreen() {
       }
     } catch (err: any) {
       console.error('Error fetching my cars/appointments:', err);
-      Alert.alert('Erreur', err?.message || "Impossible de récupérer vos voitures.");
+      Alert.alert(t('common.error'), err?.message || t('cars.fetchMyCarsFailed'));
     } finally {
       setLoading(false);
     }
@@ -244,6 +250,15 @@ export default function CarsScreen() {
     }, [isLoading, isAuthenticated, fetchMyCarsAndRdv])
   );
 
+  // Refresh when app comes back to foreground
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active' && isAuthenticated) {
+        fetchMyCarsAndRdv();
+      }
+    });
+    return () => sub.remove();
+  }, [isAuthenticated, fetchMyCarsAndRdv]);
   useEffect(() => {
     if (!isLoading) {
       fetchMyCarsAndRdv();
@@ -382,9 +397,11 @@ export default function CarsScreen() {
       const carId = car._id?.toString?.() || car.id || '';
       const apts = appointmentsByCarId.get(carId) || [];
       const hasRdv = apts.length > 0;
+      const hasActiveOrPendingRdv = apts.some((apt) => apt.status !== 'finish');
       
       if (rdvFilter === 'with_rdv') {
-        return hasRdv;
+        // Exclude cars where all RDVs are finished from "Avec RDV" section.
+        return hasRdv && hasActiveOrPendingRdv;
       } else if (rdvFilter === 'without_rdv') {
         return !hasRdv;
       } else if (rdvFilter === 'termine') {
@@ -419,11 +436,21 @@ export default function CarsScreen() {
     [appointmentsByCarId]
   );
 
+  // Maximum number of images allowed
+  const MAX_IMAGES = 10;
+
   const pickImages = async () => {
     try {
+      // Check current images count
+      const remainingSlots = MAX_IMAGES - pickedImages.length;
+      if (remainingSlots <= 0) {
+        Alert.alert(t('cars.limits.reachedTitle'), t('cars.limits.maxImages', { max: MAX_IMAGES }));
+        return;
+      }
+
       const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!permission.granted) {
-        Alert.alert('Permission requise', "L'accès aux photos est nécessaire pour ajouter des images.");
+        Alert.alert(t('cars.permissions.requiredTitle'), t('cars.permissions.photosBody'));
         return;
       }
 
@@ -431,25 +458,158 @@ export default function CarsScreen() {
         mediaTypes: ['images'],
         allowsMultipleSelection: true,
         quality: 0.85,
-        selectionLimit: 10,
-      } as any);
+        selectionLimit: remainingSlots, // Limit based on remaining slots
+      });
 
       if (!result.canceled && result.assets?.length) {
         // Validate file sizes (5MB max per file)
         const invalidFiles = result.assets.filter(asset => (asset.fileSize || 0) > 5 * 1024 * 1024);
         if (invalidFiles.length > 0) {
-          Alert.alert('Erreur', 'Certains fichiers dépassent 5MB. Veuillez réduire leur taille.');
+          Alert.alert(t('common.error'), t('cars.errors.someFilesTooLarge'));
           return;
         }
-        if (result.assets.length > 10) {
-          Alert.alert('Erreur', 'Vous ne pouvez télécharger que 10 images maximum');
+        
+        // Check total images count
+        const newTotal = pickedImages.length + result.assets.length;
+        if (newTotal > MAX_IMAGES) {
+          Alert.alert(
+            t('cars.limits.reachedTitle'),
+            t('cars.limits.maxImagesWithSelected', { max: MAX_IMAGES, count: pickedImages.length })
+          );
           return;
         }
-        setPickedImages(result.assets);
+
+        // Show progress modal while importing selected images
+        setShowUploadModal(true);
+        setUploadPercent(0);
+        await new Promise((r) => setTimeout(r, 30));
+        const toAdd = result.assets;
+        const existing = [...pickedImages];
+        for (let i = 0; i < toAdd.length; i++) {
+          existing.push(toAdd[i]);
+          const pct = Math.round(((i + 1) / toAdd.length) * 100);
+          setUploadPercent(pct);
+          // yield to UI
+          // eslint-disable-next-line no-await-in-loop
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        setPickedImages(existing);
+        setShowUploadModal(false);
+        setUploadPercent(0);
       }
     } catch (err: any) {
-      Alert.alert('Erreur', err?.message || "Impossible d'ouvrir la galerie.");
+      Alert.alert(t('common.error'), err?.message || t('cars.errors.openGallery'));
     }
+  };
+
+  const takePicture = async () => {
+    try {
+      // Check current images count
+      const remainingSlots = MAX_IMAGES - pickedImages.length;
+      if (remainingSlots <= 0) {
+        Alert.alert(t('cars.limits.reachedTitle'), t('cars.limits.maxImages', { max: MAX_IMAGES }));
+        return;
+      }
+
+      // Request camera permission
+      const permission = await ImagePicker.requestCameraPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert(t('cars.permissions.requiredTitle'), t('cars.permissions.cameraBody'));
+        return;
+      }
+
+      // On Android APK, camera capture can return a URI that Expo can't display
+      // unless media-library permission is granted too.
+      if (Platform.OS === 'android') {
+        const mediaPermission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!mediaPermission.granted) {
+          Alert.alert(
+            t('cars.permissions.requiredTitle'),
+            t('cars.permissions.photosBody')
+          );
+          return;
+        }
+      }
+
+      // Launch camera
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [4, 3],
+        quality: 0.85,
+      });
+
+      if (!result.canceled && result.assets?.length) {
+        const asset = result.assets[0];
+        
+        // Validate file size (5MB max)
+        if ((asset.fileSize || 0) > 5 * 1024 * 1024) {
+          Alert.alert(t('common.error'), t('cars.errors.imageTooLarge'));
+          return;
+        }
+
+        // Check total images count
+        if (pickedImages.length >= MAX_IMAGES) {
+          Alert.alert(t('cars.limits.reachedTitle'), t('cars.limits.maxImages', { max: MAX_IMAGES }));
+          return;
+        }
+
+        // Show quick progress while adding camera image
+        setShowUploadModal(true);
+        setUploadPercent(0);
+        await new Promise((r) => setTimeout(r, 30));
+        setUploadPercent(60);
+        setPickedImages([...pickedImages, asset]);
+        await new Promise((r) => setTimeout(r, 80));
+        setUploadPercent(100);
+        await new Promise((r) => setTimeout(r, 120));
+        setShowUploadModal(false);
+        setUploadPercent(0);
+      }
+    } catch (err: any) {
+      Alert.alert(t('common.error'), err?.message || t('cars.errors.openCamera'));
+    }
+  };
+
+  // Normalize URIs so Expo Image can display them on Android APK builds.
+  const getDisplayImageUri = (uri?: string | null) => {
+    if (!uri) return null;
+    if (
+      uri.startsWith('file://') ||
+      uri.startsWith('content://') ||
+      uri.startsWith('http://') ||
+      uri.startsWith('https://')
+    ) {
+      return uri;
+    }
+    return `file://${uri}`;
+  };
+
+  const showImagePickerOptions = () => {
+    const remainingSlots = MAX_IMAGES - pickedImages.length;
+    if (remainingSlots <= 0) {
+      Alert.alert(t('cars.limits.reachedTitle'), t('cars.limits.maxImages', { max: MAX_IMAGES }));
+      return;
+    }
+
+    Alert.alert(
+      t('cars.addImagesTitle'),
+      `${pickedImages.length}/${MAX_IMAGES}`,
+      [
+        {
+          text: 'Camera',
+          onPress: takePicture,
+        },
+        {
+          text: 'Gallery',
+          onPress: pickImages,
+        },
+        {
+          text: t('common.cancel'),
+          style: 'cancel',
+        },
+      ]
+    );
   };
 
   // Normalize strings for comparison
@@ -477,16 +637,26 @@ export default function CarsScreen() {
                        normalizedModel.includes(normalizedVinModel);
 
     if (!brandMatch || !modelMatch) {
-      let errorDetails = [];
+      const errorDetails: string[] = [];
       if (!brandMatch) {
-        errorDetails.push(`La marque "${brand}" ne correspond pas à "${vinDetails.make}" du VIN`);
+        errorDetails.push(
+          t('cars.vinBrandMismatch', { brand, vinMake: vinDetails.make })
+        );
       }
       if (!modelMatch) {
-        errorDetails.push(`Le modèle "${model}" ne correspond pas à "${vinDetails.model}" du VIN`);
+        errorDetails.push(
+          t('cars.vinModelMismatch', { model, vinModel: vinDetails.model })
+        );
       }
+      const header = t('cars.vinMismatchHeader');
+      const verifiedLine = t('cars.vinVerifiedLine', {
+        make: vinDetails.make,
+        model: vinDetails.model,
+        year: vinDetails.year ? ` (${vinDetails.year})` : '',
+      });
       return {
         match: false,
-        error: `Les informations du véhicule ne correspondent pas au VIN vérifié.\n\n${errorDetails.join('\n')}\n\nVIN vérifié: ${vinDetails.make} ${vinDetails.model}${vinDetails.year ? ` (${vinDetails.year})` : ''}`
+        error: `${header}\n\n${errorDetails.join('\n')}\n\n${verifiedLine}`,
       };
     }
 
@@ -517,11 +687,11 @@ export default function CarsScreen() {
         if (response.ok && data?.ok && data.valid) {
           setVinValid(true);
           setVinError('');
-          setVinRemark(data.remark || 'VIN vérifié');
+          setVinRemark(data.remark || t('cars.vinVerifiedShort'));
           setVinDetails(data.details || null);
         } else {
           setVinValid(false);
-          let errorMessage = 'VIN invalide ou non trouvé. Veuillez vérifier le numéro.';
+          let errorMessage = t('cars.vinInvalidOrNotFound');
           
           if (data?.message) {
             if (typeof data.message === 'string') {
@@ -540,7 +710,7 @@ export default function CarsScreen() {
       } catch (error: any) {
         console.error('Error verifying VIN:', error);
         setVinValid(false);
-        setVinError(error?.message || 'Erreur de connexion lors de la vérification du VIN. Veuillez réessayer.');
+        setVinError(error?.message || t('cars.vinConnectionError'));
         setVinRemark('');
         setVinDetails(null);
       } finally {
@@ -558,24 +728,34 @@ export default function CarsScreen() {
 
     // Basic validation
     if (!finalBrand || !model || !year || isNaN(year) || isNaN(km) || isNaN(price)) {
-      Alert.alert('Validation', 'Marque, modèle, année, km et prix sont requis.');
+      Alert.alert(t('common.validation'), t('cars.validation.requiredMain'));
+      return;
+    }
+
+    // Year bounds validation: backend requires > 1900
+    const currentYear = new Date().getFullYear();
+    if (year <= 1900 || year > currentYear + 1) {
+      Alert.alert(
+        t('common.validation'),
+        t('cars.errors.genericCreate') + '\n' + (t('cars.validation.invalidDate') || "L'année doit être supérieure à 1900")
+      );
       return;
     }
 
     // Price validation: must be at least 200,000
     if (isNaN(price) || price < 200000) {
-      Alert.alert('Validation', 'Le prix minimum est de 200,000.00 DA');
+      Alert.alert(t('common.validation'), t('cars.validation.minPrice'));
       return;
     }
 
     // VIN validation if provided (unless bypass is enabled)
     if (carForm.vin && carForm.vin.length === 17 && !bypassVin) {
       if (vinValid === false || vinValidating) {
-        Alert.alert('Validation', 'Veuillez vérifier que le VIN est valide avant de continuer');
+        Alert.alert(t('common.validation'), t('cars.validation.checkVin'));
         return;
       }
       if (vinValid === null) {
-        Alert.alert('Validation', 'Veuillez attendre la vérification du VIN');
+        Alert.alert(t('common.validation'), t('cars.validation.waitVin'));
         return;
       }
 
@@ -588,7 +768,7 @@ export default function CarsScreen() {
     }
 
     if (!pickedImages.length) {
-      Alert.alert('Validation', 'Ajoutez au moins une image.');
+      Alert.alert(t('common.validation'), t('cars.validation.addAtLeastOneImage'));
       return;
     }
 
@@ -616,24 +796,163 @@ export default function CarsScreen() {
       if (carForm.usedby.trim()) form.append('usedby', carForm.usedby.trim());
       form.append('accident', carForm.accident ? 'true' : 'false');
 
-      pickedImages.forEach((asset, idx) => {
-        const uri = asset.uri;
-        const name = asset.fileName || `car_${Date.now()}_${idx}.jpg`;
-        const type = (asset as any).mimeType || 'image/jpeg';
-        form.append('images', { uri, name, type } as any);
-      });
-
-      const res = await apiRequest('/car/create', {
-        method: 'POST',
-        body: form,
-      });
-      const data = await res.json().catch(() => null);
-      if (!res.ok || !data?.ok) {
-        const msg = data?.message || 'Erreur lors de la création';
-        const extra = Array.isArray(data?.errors) ? `\n- ${data.errors.join('\n- ')}` : '';
-        Alert.alert('Erreur', `${msg}${extra}`);
+      // Validate that we have images to upload
+      if (pickedImages.length === 0) {
+        Alert.alert(t('common.validation'), t('cars.validation.addAtLeastOneImage'));
         return;
       }
+
+      // Add images to FormData
+      // React Native FormData format for file upload on Android/iOS
+      pickedImages.forEach((asset, idx) => {
+        if (!asset || !asset.uri) {
+          console.warn(`Skipping invalid image asset at index ${idx}`);
+          return;
+        }
+        
+        // Get the URI - keep it as is (expo-image-picker already provides correct format)
+        let uri = asset.uri;
+        
+        // Ensure file:// prefix for React Native FormData
+        if (!uri.startsWith('file://') && !uri.startsWith('content://') && !uri.startsWith('http')) {
+          uri = `file://${uri}`;
+        }
+        
+        // Extract filename
+        let fileName = asset.fileName || 
+                        asset.uri.split('/').pop()?.split('?')[0] || 
+                        `car_${Date.now()}_${idx}.jpg`;
+        
+        // Get MIME type
+        let mimeType = asset.mimeType || 
+                       (asset as any).type || 
+                       (fileName.toLowerCase().endsWith('.png') ? 'image/png' : 
+                        fileName.toLowerCase().endsWith('.gif') ? 'image/gif' : 
+                        fileName.toLowerCase().endsWith('.webp') ? 'image/webp' : 
+                        (fileName.toLowerCase().endsWith('.jpg') || fileName.toLowerCase().endsWith('.jpeg')) ? 'image/jpeg' :
+                        'image/jpeg');
+
+        // Normalize HEIC/HEIF to JPEG (backend only allows JPEG/PNG/WEBP/GIF)
+        const lowerMime = String(mimeType).toLowerCase();
+        const isHeic = lowerMime.includes('heic') || lowerMime.includes('heif') || fileName.toLowerCase().endsWith('.heic') || fileName.toLowerCase().endsWith('.heif');
+        if (isHeic) {
+          mimeType = 'image/jpeg';
+          if (!fileName.toLowerCase().endsWith('.jpg') && !fileName.toLowerCase().endsWith('.jpeg')) {
+            fileName = fileName.replace(/\.(heic|heif)$/i, '') + '.jpg';
+          }
+        }
+
+        // Enforce allowed set
+        const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+        if (!allowed.includes(mimeType)) {
+          mimeType = 'image/jpeg';
+          if (!fileName.toLowerCase().match(/\.(jpg|jpeg|png|webp|gif)$/)) {
+            fileName = fileName + '.jpg';
+          }
+        }
+        
+        // React Native FormData format: { uri, name, type }
+        // For Android, uri can be file:// or content://
+        // For iOS, uri should be file://
+        form.append('images', {
+          uri: uri,
+          name: fileName,
+          type: mimeType,
+        } as any);
+        
+        // Log for debugging (works in production too if needed)
+        console.log(`[Image Upload] Adding image ${idx + 1}/${pickedImages.length}:`, {
+          uri: uri.substring(0, 50) + '...',
+          name: fileName,
+          type: mimeType,
+          platform: Platform.OS,
+        });
+      });
+
+      console.log(`[Car Creation] Uploading car with ${pickedImages.length} image(s)...`);
+      console.log(`[Car Creation] Platform: ${Platform.OS}`);
+
+      // Switch to XHR upload to track progress in a modal
+      const backendUrl = getBackendUrl();
+      const url = `${backendUrl}/api/car/create`;
+      setShowUploadModal(true);
+      setUploadPercent(0);
+      await new Promise((r) => setTimeout(r, 60));
+      const res: Response = await new Promise(async (resolve, reject) => {
+        try {
+          let token: string | null = null;
+          try {
+            const AsyncStorage = (await import('@react-native-async-storage/async-storage')).default;
+            token = await AsyncStorage.getItem('auth_token');
+          } catch {}
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', url);
+          if (token) {
+            xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+          }
+          xhr.upload.onprogress = (event) => {
+            if (event.lengthComputable) {
+              const pct = Math.round((event.loaded / event.total) * 100);
+              setUploadPercent(pct);
+            }
+          };
+          xhr.onreadystatechange = () => {
+            if (xhr.readyState === 4) {
+              const status = xhr.status;
+              const statusText = xhr.statusText;
+              const text = xhr.responseText ?? '';
+              const response: Response = {
+                ok: status >= 200 && status < 300,
+                status,
+                statusText,
+                headers: new Headers(),
+                url,
+                redirected: false,
+                type: 'basic',
+                clone: () => response,
+                body: null as any,
+                bodyUsed: true,
+                arrayBuffer: async () => new TextEncoder().encode(text).buffer,
+                blob: async () => new Blob([text]),
+                formData: async () => new FormData(),
+                json: async () => {
+                  try { return JSON.parse(text || '{}'); } catch { return null as any; }
+                },
+                text: async () => text,
+              } as unknown as Response;
+              resolve(response);
+            }
+          };
+          xhr.onerror = () => reject(new Error('Network error'));
+          xhr.send(form as any);
+        } catch (e) {
+          reject(e as any);
+        }
+      });
+      
+      console.log(`[Car Creation] Response status: ${res.status}`);
+      
+      const data = await res.json().catch((err) => {
+        console.error('[Car Creation] JSON parse error:', err);
+        return null;
+      });
+      
+      if (!res.ok || !data?.ok) {
+        const msg = data?.message || t('cars.errors.genericCreate');
+        const extra = Array.isArray(data?.errors) ? `\n- ${data.errors.join('\n- ')}` : '';
+        
+        console.error('[Car Creation] Error response:', { 
+          status: res.status, 
+          statusText: res.statusText,
+          data,
+        });
+        
+        Alert.alert(t('common.error'), `${msg}${extra}`);
+        return;
+      }
+      
+      console.log('[Car Creation] Success!', data);
+      setUploadPercent(100);
 
       setShowAddModal(false);
       setCarForm({
@@ -661,12 +980,14 @@ export default function CarsScreen() {
       setVinDetails(null);
       setBypassVin(false);
       await fetchMyCarsAndRdv();
-      Alert.alert('Succès', 'Voiture ajoutée avec succès');
+      Alert.alert(t('common.success'), t('cars.success.carCreated'));
     } catch (err: any) {
       console.error('Create car error:', err);
-      Alert.alert('Erreur', err?.message || 'Erreur lors de la création');
+      Alert.alert(t('common.error'), err?.message || t('cars.errors.genericCreate'));
     } finally {
       setCreatingCar(false);
+      setShowUploadModal(false);
+      setUploadPercent(0);
     }
   };
 
@@ -787,15 +1108,15 @@ export default function CarsScreen() {
     const time = rdvForm.time.trim();
 
     if (!workshopId || !date || !time) {
-      Alert.alert('Validation', 'Atelier, date et heure sont requis.');
+      Alert.alert(t('common.validation'), t('cars.validation.rdvRequired'));
       return;
     }
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      Alert.alert('Validation', 'Date invalide. Format attendu: YYYY-MM-DD');
+      Alert.alert(t('common.validation'), t('cars.validation.invalidDate'));
       return;
     }
     if (!/^([0-1]?[0-9]|2[0-3]):(00|30)$/.test(time)) {
-      Alert.alert('Validation', 'Heure invalide. Ex: 08:00, 08:30, 09:00');
+      Alert.alert(t('common.validation'), t('cars.validation.invalidTime'));
       return;
     }
 
@@ -813,18 +1134,18 @@ export default function CarsScreen() {
       });
       const data = await res.json().catch(() => null);
       if (!res.ok || !data?.ok) {
-        const msg = data?.message || 'Erreur lors de la création du rendez-vous';
+        const msg = data?.message || t('cars.errors.genericCreateRdv');
         const extra = Array.isArray(data?.errors) ? `\n- ${data.errors.join('\n- ')}` : '';
-        Alert.alert('Erreur', `${msg}${extra}`);
+        Alert.alert(t('common.error'), `${msg}${extra}`);
         return;
       }
       setShowRdvModal(false);
       setShowDatePicker(false);
       setSelectedCarForRdv(null);
       await fetchMyCarsAndRdv();
-      Alert.alert('Succès', 'Rendez-vous créé avec succès');
+      Alert.alert(t('common.success'), t('cars.success.rdvCreated'));
     } catch (err: any) {
-      Alert.alert('Erreur', err?.message || 'Erreur lors de la création du rendez-vous');
+      Alert.alert(t('common.error'), err?.message || t('cars.errors.genericCreateRdv'));
     } finally {
       setCreatingRdv(false);
     }
@@ -836,8 +1157,8 @@ export default function CarsScreen() {
         <StatusBar style="dark" />
         <View style={styles.center}>
           <IconSymbol name="lock.fill" size={scale(44)} color="#64748b" />
-          <ThemedText style={styles.centerTitle}>Connexion requise</ThemedText>
-          <ThemedText style={styles.centerText}>Connectez-vous pour voir vos voitures.</ThemedText>
+          <ThemedText style={styles.centerTitle}>{t('cars.loginRequiredTitle')}</ThemedText>
+          <ThemedText style={styles.centerText}>{t('cars.loginRequiredBody')}</ThemedText>
         </View>
       </SafeAreaView>
     );
@@ -866,8 +1187,8 @@ export default function CarsScreen() {
                   </LinearGradient>
                 </View>
                 <View style={{ flex: 1 }}>
-                  <ThemedText style={styles.title}>Mes voitures</ThemedText>
-                  <ThemedText style={styles.subtitle}>Gérez vos annonces et vos rendez-vous</ThemedText>
+                  <ThemedText style={styles.title}>{t('cars.title')}</ThemedText>
+                  <ThemedText style={styles.subtitle}>{t('cars.subtitle')}</ThemedText>
                 </View>
               </View>
 
@@ -905,7 +1226,7 @@ export default function CarsScreen() {
                   style={styles.filterButtonGradient}
                 >
                   <ThemedText style={[styles.filterButtonText, rdvFilter === 'all' && styles.filterButtonTextActive]}>
-                    Toutes
+                    {t('cars.filtersTabs.all')}
                   </ThemedText>
                 </LinearGradient>
               </TouchableOpacity>
@@ -925,7 +1246,7 @@ export default function CarsScreen() {
                     color={rdvFilter === 'with_rdv' ? '#ffffff' : '#6b7280'} 
                   />
                   <ThemedText style={[styles.filterButtonText, rdvFilter === 'with_rdv' && styles.filterButtonTextActive]}>
-                    Avec RDV
+                    {t('cars.filtersTabs.withRdv')}
                   </ThemedText>
                 </LinearGradient>
               </TouchableOpacity>
@@ -945,7 +1266,7 @@ export default function CarsScreen() {
                     color={rdvFilter === 'without_rdv' ? '#ffffff' : '#6b7280'} 
                   />
                   <ThemedText style={[styles.filterButtonText, rdvFilter === 'without_rdv' && styles.filterButtonTextActive]}>
-                    Sans RDV
+                    {t('cars.filtersTabs.withoutRdv')}
                   </ThemedText>
                 </LinearGradient>
               </TouchableOpacity>
@@ -965,7 +1286,7 @@ export default function CarsScreen() {
                     color={rdvFilter === 'termine' ? '#ffffff' : '#6b7280'} 
                   />
                   <ThemedText style={[styles.filterButtonText, rdvFilter === 'termine' && styles.filterButtonTextActive]}>
-                    Terminé
+                    {t('cars.filtersTabs.finished')}
                   </ThemedText>
                 </LinearGradient>
               </TouchableOpacity>
@@ -985,7 +1306,7 @@ export default function CarsScreen() {
                     color={rdvFilter === 'temoignages' ? '#ffffff' : '#6b7280'} 
                   />
                   <ThemedText style={[styles.filterButtonText, rdvFilter === 'temoignages' && styles.filterButtonTextActive]}>
-                    Témoignages
+                    {t('cars.filtersTabs.testimonials')}
                   </ThemedText>
                 </LinearGradient>
               </TouchableOpacity>
@@ -998,32 +1319,32 @@ export default function CarsScreen() {
           {loading ? (
             <View style={styles.loadingBox}>
               <ActivityIndicator size="large" color="#0d9488" />
-              <ThemedText style={styles.loadingText}>Chargement...</ThemedText>
+              <ThemedText style={styles.loadingText}>{t('cars.loading')}</ThemedText>
             </View>
           ) : filteredCars.length === 0 ? (
             <View style={styles.emptyBox}>
               <IconSymbol name="car" size={scale(52)} color="#94a3b8" />
               <ThemedText style={styles.emptyTitle}>
-                {rdvFilter === 'with_rdv' ? 'Aucune voiture avec RDV' : 
-                 rdvFilter === 'without_rdv' ? 'Toutes vos voitures ont un RDV' : 
-                 rdvFilter === 'termine' ? 'Aucune voiture avec RDV terminé' :
-                 rdvFilter === 'temoignages' ? 'Aucun témoignage disponible' :
-                 'Aucune voiture'}
+                {rdvFilter === 'with_rdv' ? t('cars.empty.withRdv') : 
+                 rdvFilter === 'without_rdv' ? t('cars.empty.withoutRdv') : 
+                 rdvFilter === 'termine' ? t('cars.empty.finished') :
+                 rdvFilter === 'temoignages' ? t('cars.empty.testimonials') :
+                 t('cars.empty.default')}
               </ThemedText>
               <ThemedText style={styles.emptyText}>
                 {rdvFilter === 'all' 
-                  ? 'Ajoutez votre première voiture pour commencer la vérification.'
+                  ? t('cars.empty.allHint')
                   : rdvFilter === 'termine'
-                  ? 'Les voitures avec RDV terminé et statut actif apparaîtront ici.'
+                  ? t('cars.empty.finishedHint')
                   : rdvFilter === 'temoignages'
-                  ? 'Les témoignages des voitures avec RDV terminé et statut actif apparaîtront ici.'
-                  : 'Essayez un autre filtre pour voir plus de résultats.'}
+                  ? t('cars.empty.testimonialsHint')
+                  : t('cars.empty.otherHint')}
               </ThemedText>
               {rdvFilter === 'all' && (
                 <TouchableOpacity style={styles.primaryBtn} onPress={() => setShowAddModal(true)} activeOpacity={0.85}>
                   <LinearGradient colors={['#0d9488', '#14b8a6']} style={styles.primaryBtnGradient}>
                     <IconSymbol name="plus.circle.fill" size={scale(20)} color="#ffffff" />
-                    <ThemedText style={styles.primaryBtnText}>Ajouter une voiture</ThemedText>
+                    <ThemedText style={styles.primaryBtnText}>{t('cars.addCar')}</ThemedText>
                   </LinearGradient>
                 </TouchableOpacity>
               )}
@@ -1046,7 +1367,7 @@ export default function CarsScreen() {
                       </LinearGradient>
                     </View>
                     <View style={styles.temoignagesHeaderText}>
-                      <ThemedText style={styles.temoignagesTitle}>Témoignages</ThemedText>
+                      <ThemedText style={styles.temoignagesTitle}>{t('cars.filtersTabs.testimonials')}</ThemedText>
                       <ThemedText style={styles.temoignagesSubtitle}>
                         Voitures certifiées avec vérification terminée
                       </ThemedText>
@@ -1057,8 +1378,9 @@ export default function CarsScreen() {
 
               <View style={styles.temoignagesList}>
                 {filteredCars.map((car, index) => {
+                  if (!car) return null;
                   const carId = car._id?.toString?.() || car.id || '';
-                  const img = car.images?.[0] ? getImageUrl(car.images[0]) : null;
+                  const img = car.images && Array.isArray(car.images) && car.images[0] ? getImageUrl(car.images[0]) : null;
                   const apts = appointmentsByCarId.get(carId) || [];
                   const finishedApts = apts.filter((apt) => apt.status === 'finish');
                   const latestFinished = finishedApts[0];
@@ -1156,13 +1478,14 @@ export default function CarsScreen() {
           ) : (
             <View style={styles.list}>
               {filteredCars.map((car) => {
+                if (!car) return null;
                 const carId = car._id?.toString?.() || car.id || '';
-                const img = car.images?.[0] ? getImageUrl(car.images[0]) : null;
+                const img = car.images && Array.isArray(car.images) && car.images[0] ? getImageUrl(car.images[0]) : null;
                 const meta = statusMeta[car.status] || { label: car.status, colors: ['#64748b', '#475569'] as [string, string] };
                 const apts = appointmentsByCarId.get(carId) || [];
                 const latest = apts[0];
                 const rdvMeta = latest ? (rdvStatusMeta[latest.status] || { label: latest.status, colors: ['#64748b', '#475569'] as [string, string] }) : null;
-                const workshopName = latest?.id_workshop?.name || latest?.id_workshop?.email || 'Atelier';
+                const workshopName = latest?.id_workshop?.name || latest?.id_workshop?.email || t('workshops.title');
 
                 return (
                   <View key={carId} style={styles.card}>
@@ -1172,7 +1495,7 @@ export default function CarsScreen() {
                       ) : (
                         <View style={styles.cardImagePlaceholder}>
                           <IconSymbol name="photo" size={scale(34)} color="#94a3b8" />
-                          <ThemedText style={styles.cardImagePlaceholderText}>Aucune image</ThemedText>
+                          <ThemedText style={styles.cardImagePlaceholderText}>{t('cars.noImage')}</ThemedText>
                         </View>
                       )}
 
@@ -1194,17 +1517,17 @@ export default function CarsScreen() {
                       <View style={styles.metaRow}>
                         <View style={styles.metaItem}>
                           <IconSymbol name="speedometer" size={scale(16)} color="#64748b" />
-                          <ThemedText style={styles.metaText}>{car.km?.toLocaleString?.() || car.km} km</ThemedText>
+                          <ThemedText style={styles.metaText}>{car.km?.toLocaleString?.() || car.km} {t('home.mileageUnit')}</ThemedText>
                         </View>
                         <View style={styles.metaItem}>
                           <IconSymbol name="tag.fill" size={scale(16)} color="#64748b" />
-                          <ThemedText style={styles.metaText}>{car.price?.toLocaleString?.() || car.price} DH</ThemedText>
+                          <ThemedText style={styles.metaText}>{car.price?.toLocaleString?.() || car.price} {t('home.priceCurrency')}</ThemedText>
                         </View>
                       </View>
 
                       <View style={styles.rdvBox}>
                         <View style={{ flex: 1 }}>
-                          <ThemedText style={styles.rdvTitle}>Rendez-vous atelier</ThemedText>
+                          <ThemedText style={styles.rdvTitle}>{t('cars.appointmentTitle')}</ThemedText>
                           {latest ? (
                             <>
                               <View style={styles.rdvLine}>
@@ -1219,7 +1542,7 @@ export default function CarsScreen() {
                               </View>
                             </>
                           ) : (
-                            <ThemedText style={styles.rdvEmpty}>Aucun rendez-vous pour cette voiture.</ThemedText>
+                            <ThemedText style={styles.rdvEmpty}>{t('cars.noAppointment')}</ThemedText>
                           )}
                         </View>
 
@@ -1237,7 +1560,7 @@ export default function CarsScreen() {
                           onPress={() => router.push(`/car/${carId}`)}
                         >
                           <IconSymbol name="doc.text.fill" size={scale(18)} color="#0d9488" />
-                          <ThemedText style={styles.secondaryBtnText}>Détails</ThemedText>
+                          <ThemedText style={styles.secondaryBtnText}>{t('common.details')}</ThemedText>
                         </TouchableOpacity>
 
                         {canCreateRdvForCar(car) ? (
@@ -1248,13 +1571,13 @@ export default function CarsScreen() {
                           >
                             <LinearGradient colors={['#0d9488', '#14b8a6']} style={styles.primarySmallBtnGradient}>
                               <IconSymbol name="calendar.fill" size={scale(18)} color="#ffffff" />
-                              <ThemedText style={styles.primarySmallBtnText}>Créer RDV</ThemedText>
+                                <ThemedText style={styles.primarySmallBtnText}>{t('cars.createRdv')}</ThemedText>
                             </LinearGradient>
                           </TouchableOpacity>
                         ) : (
                           <View style={styles.primarySmallBtnDisabled}>
                             <IconSymbol name="calendar.fill" size={scale(18)} color="#94a3b8" />
-                            <ThemedText style={styles.primarySmallBtnDisabledText}>RDV existant</ThemedText>
+                            <ThemedText style={styles.primarySmallBtnDisabledText}>{t('cars.rdvExisting')}</ThemedText>
                           </View>
                         )}
                       </View>
@@ -1272,35 +1595,72 @@ export default function CarsScreen() {
         <View style={styles.modalBackdrop}>
           <View style={styles.modalSheet}>
             <View style={styles.modalHeader}>
-              <ThemedText style={styles.modalTitle}>Ajouter une voiture</ThemedText>
+              <ThemedText style={styles.modalTitle}>{t('cars.addCarModalTitle')}</ThemedText>
               <TouchableOpacity onPress={() => setShowAddModal(false)} style={styles.modalClose} activeOpacity={0.85}>
                 <IconSymbol name="xmark" size={scale(18)} color="#64748b" />
               </TouchableOpacity>
             </View>
 
             <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: padding.large }}>
-              <TouchableOpacity style={styles.imagePickerBtn} activeOpacity={0.85} onPress={pickImages}>
+              <TouchableOpacity style={styles.imagePickerBtn} activeOpacity={0.85} onPress={showImagePickerOptions}>
                 <LinearGradient colors={['#0d9488', '#14b8a6']} style={styles.imagePickerGradient}>
                   <IconSymbol name="camera.fill" size={scale(18)} color="#ffffff" />
                   <ThemedText style={styles.imagePickerText}>
-                    {pickedImages.length ? `${pickedImages.length} image(s) sélectionnée(s)` : 'Ajouter des images'}
+                    {pickedImages.length
+                      ? t('cars.addImagesCounter', { count: pickedImages.length, max: MAX_IMAGES })
+                      : t('cars.addImagesMax', { max: MAX_IMAGES })}
                   </ThemedText>
                 </LinearGradient>
               </TouchableOpacity>
 
               {pickedImages.length > 0 && (
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: padding.medium }}>
+                <View style={{ marginTop: padding.medium }}>
+                  <ThemedText style={{ fontSize: scale(12), color: '#666', marginBottom: padding.small }}>
+                    {pickedImages.length}/{MAX_IMAGES} images sélectionnées
+                  </ThemedText>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false}>
                   <View style={{ flexDirection: 'row', gap: padding.small }}>
                     {pickedImages.map((img, idx) => (
-                      <Image key={idx} source={{ uri: img.uri }} style={styles.thumb} />
+                        <View key={idx} style={{ position: 'relative' }}>
+                          {getDisplayImageUri(img.uri) ? (
+                            <Image
+                              source={{ uri: getDisplayImageUri(img.uri) as string }}
+                              style={styles.thumb}
+                              contentFit="cover"
+                            />
+                          ) : null}
+                          <TouchableOpacity
+                            style={{
+                              position: 'absolute',
+                              top: -5,
+                              right: -5,
+                              backgroundColor: '#ef4444',
+                              borderRadius: scale(12),
+                              width: scale(24),
+                              height: scale(24),
+                              justifyContent: 'center',
+                              alignItems: 'center',
+                              borderWidth: 2,
+                              borderColor: '#ffffff',
+                            }}
+                            onPress={() => {
+                              const newImages = pickedImages.filter((_, i) => i !== idx);
+                              setPickedImages(newImages);
+                            }}
+                            activeOpacity={0.7}
+                          >
+                            <IconSymbol name="xmark" size={scale(12)} color="#ffffff" />
+                          </TouchableOpacity>
+                        </View>
                     ))}
                   </View>
                 </ScrollView>
+                </View>
               )}
 
               <View style={styles.formGrid}>
                 <View style={styles.formField}>
-                  <ThemedText style={styles.label}>Marque *</ThemedText>
+                  <ThemedText style={styles.label}>{t('cars.form.brand')}</ThemedText>
                   <TouchableOpacity
                     activeOpacity={0.85}
                     onPress={() => setShowBrandPicker(true)}
@@ -1318,51 +1678,51 @@ export default function CarsScreen() {
                         setCustomBrand(t);
                         setCarForm((p) => ({ ...p, brand: t }));
                       }}
-                      placeholder="Entrez le nom de la marque"
+                      placeholder={t('cars.placeholders.brandName')}
                       placeholderTextColor="#94a3b8"
                       style={[styles.input, { marginTop: padding.small }]}
                     />
                   )}
                 </View>
                 <View style={styles.formField}>
-                  <ThemedText style={styles.label}>Modèle *</ThemedText>
+                  <ThemedText style={styles.label}>{t('cars.form.model')}</ThemedText>
                   <TextInput
                     value={carForm.model}
                     onChangeText={(t) => setCarForm((p) => ({ ...p, model: t }))}
-                    placeholder="Ex: Corolla"
+                    placeholder={t('cars.placeholders.modelExample')}
                     placeholderTextColor="#94a3b8"
                     style={styles.input}
                   />
                 </View>
 
                 <View style={styles.formField}>
-                  <ThemedText style={styles.label}>Année *</ThemedText>
+                  <ThemedText style={styles.label}>{t('cars.form.year')}</ThemedText>
                   <TextInput
                     value={carForm.year}
                     onChangeText={(t) => setCarForm((p) => ({ ...p, year: t.replace(/[^\d]/g, '') }))}
-                    placeholder="2020"
+                    placeholder={t('cars.placeholders.yearExample')}
                     keyboardType="numeric"
                     placeholderTextColor="#94a3b8"
                     style={styles.input}
                   />
                 </View>
                 <View style={styles.formField}>
-                  <ThemedText style={styles.label}>Kilométrage *</ThemedText>
+                  <ThemedText style={styles.label}>{t('cars.form.mileage')}</ThemedText>
                   <TextInput
                     value={carForm.km}
                     onChangeText={(t) => setCarForm((p) => ({ ...p, km: t.replace(/[^\d]/g, '') }))}
-                    placeholder="150000"
+                    placeholder={t('cars.placeholders.mileageExample')}
                     keyboardType="numeric"
                     placeholderTextColor="#94a3b8"
                     style={styles.input}
                   />
                 </View>
                 <View style={styles.formField}>
-                  <ThemedText style={styles.label}>Prix (DA) *</ThemedText>
+                  <ThemedText style={styles.label}>{t('cars.form.price', { currency: t('home.priceCurrency') })}</ThemedText>
                   <TextInput
                     value={carForm.price}
                     onChangeText={(t) => setCarForm((p) => ({ ...p, price: t.replace(/[^\d.]/g, '') }))}
-                    placeholder="200000"
+                    placeholder={t('cars.placeholders.priceExample')}
                     keyboardType="numeric"
                     placeholderTextColor="#94a3b8"
                     style={[
@@ -1370,19 +1730,19 @@ export default function CarsScreen() {
                       carForm.price && parseFloat(carForm.price) < 200000 && styles.inputError,
                     ]}
                   />
-                  <ThemedText style={styles.hintText}>Prix minimum: 200,000.00 DA</ThemedText>
+                  <ThemedText style={styles.hintText}>{t('cars.form.priceMinHint', { currency: t('home.priceCurrency') })}</ThemedText>
                   {carForm.price && parseFloat(carForm.price) < 200000 && (
                     <ThemedText style={styles.errorText}>Le prix doit être d'au moins 200,000.00 DA</ThemedText>
                   )}
                 </View>
 
                 <View style={styles.formField}>
-                  <ThemedText style={styles.label}>VIN (Numéro d'identification du véhicule)</ThemedText>
+                  <ThemedText style={styles.label}>{t('cars.form.vin')}</ThemedText>
                   <View style={styles.vinInputWrapper}>
                     <TextInput
                       value={carForm.vin}
                       onChangeText={handleVinChange}
-                      placeholder="17 caractères alphanumériques"
+                      placeholder={t('cars.placeholders.vinHint')}
                       placeholderTextColor="#94a3b8"
                       maxLength={17}
                       style={[
@@ -1409,16 +1769,18 @@ export default function CarsScreen() {
                     )}
                   </View>
                   {carForm.vin.length > 0 && carForm.vin.length < 17 && (
-                    <ThemedText style={styles.hintText}>{carForm.vin.length}/17 caractères</ThemedText>
+                    <ThemedText style={styles.hintText}>
+                      {carForm.vin.length}/17
+                    </ThemedText>
                   )}
                   {carForm.vin.length === 0 && (
-                    <ThemedText style={styles.hintText}>17 caractères alphanumériques (sans I, O, Q)</ThemedText>
+                    <ThemedText style={styles.hintText}>{t('cars.placeholders.vinHint')}</ThemedText>
                   )}
                   
                   {vinValidating && (
                     <View style={styles.vinStatusBox}>
                       <ActivityIndicator size="small" color="#0d9488" />
-                      <ThemedText style={styles.vinStatusText}>Vérification du VIN en cours...</ThemedText>
+                      <ThemedText style={styles.vinStatusText}>{t('cars.vinChecking')}</ThemedText>
                     </View>
                   )}
 
@@ -1426,7 +1788,7 @@ export default function CarsScreen() {
                     <View style={styles.vinErrorBox}>
                       <IconSymbol name="exclamationmark.triangle.fill" size={scale(24)} color="#ef4444" />
                       <View style={{ flex: 1 }}>
-                        <ThemedText style={styles.vinErrorTitle}>VIN invalide ou non trouvé</ThemedText>
+                        <ThemedText style={styles.vinErrorTitle}>{t('cars.vinInvalidTitle')}</ThemedText>
                         <ThemedText style={styles.vinErrorText}>{vinError}</ThemedText>
                         <TouchableOpacity
                           style={styles.bypassButton}
@@ -1436,7 +1798,7 @@ export default function CarsScreen() {
                           activeOpacity={0.85}
                         >
                           <LinearGradient colors={['#f59e0b', '#d97706']} style={styles.bypassButtonGradient}>
-                            <ThemedText style={styles.bypassButtonText}>Créer quand même (VIN non vérifié)</ThemedText>
+                            <ThemedText style={styles.bypassButtonText}>{t('cars.bypassVin')}</ThemedText>
                           </LinearGradient>
                         </TouchableOpacity>
                       </View>
@@ -1448,7 +1810,7 @@ export default function CarsScreen() {
                       <IconSymbol name="exclamationmark.triangle.fill" size={scale(24)} color="#f59e0b" />
                       <View style={{ flex: 1 }}>
                         <ThemedText style={styles.vinBypassTitle}>Mode contournement activé</ThemedText>
-                        <ThemedText style={styles.vinBypassText}>Le véhicule sera créé sans vérification du VIN</ThemedText>
+                        <ThemedText style={styles.vinBypassText}>{t('cars.vinBypassText')}</ThemedText>
                       </View>
                       <TouchableOpacity
                         onPress={() => setBypassVin(false)}
@@ -1464,7 +1826,7 @@ export default function CarsScreen() {
                     <View style={styles.vinSuccessBox}>
                       <IconSymbol name="checkmark.seal.fill" size={scale(24)} color="#22c55e" />
                       <View style={{ flex: 1 }}>
-                        <ThemedText style={styles.vinSuccessTitle}>VIN valide et vérifié ✓</ThemedText>
+                        <ThemedText style={styles.vinSuccessTitle}>{t('cars.vinSuccessTitle')}</ThemedText>
                         {vinRemark && (
                           <ThemedText style={styles.vinSuccessRemark}>{vinRemark}</ThemedText>
                         )}
@@ -1472,13 +1834,13 @@ export default function CarsScreen() {
                           <View style={styles.vinDetailsBox}>
                             <ThemedText style={styles.vinDetailsTitle}>Détails du véhicule :</ThemedText>
                             {vinDetails.make && (
-                              <ThemedText style={styles.vinDetailsText}>Marque: {vinDetails.make}</ThemedText>
+                              <ThemedText style={styles.vinDetailsText}>{t('cars.form.brand').replace(' *','')}: {vinDetails.make}</ThemedText>
                             )}
                             {vinDetails.model && (
-                              <ThemedText style={styles.vinDetailsText}>Modèle: {vinDetails.model}</ThemedText>
+                              <ThemedText style={styles.vinDetailsText}>{t('cars.form.model').replace(' *','')}: {vinDetails.model}</ThemedText>
                             )}
                             {vinDetails.year && (
-                              <ThemedText style={styles.vinDetailsText}>Année: {vinDetails.year}</ThemedText>
+                              <ThemedText style={styles.vinDetailsText}>{t('cars.form.year').replace(' *','')}: {vinDetails.year}</ThemedText>
                             )}
                             {vinDetails.bodyType && (
                               <ThemedText style={styles.vinDetailsText}>Type: {vinDetails.bodyType}</ThemedText>
@@ -1490,7 +1852,7 @@ export default function CarsScreen() {
                               <ThemedText style={styles.vinDetailsText}>Transmission: {vinDetails.transmission}</ThemedText>
                             )}
                             {vinDetails.fuelType && (
-                              <ThemedText style={styles.vinDetailsText}>Carburant: {vinDetails.fuelType}</ThemedText>
+                              <ThemedText style={styles.vinDetailsText}>{t('cars.form.fuel')}: {vinDetails.fuelType}</ThemedText>
                             )}
                           </View>
                         )}
@@ -1500,21 +1862,21 @@ export default function CarsScreen() {
                 </View>
 
                 <View style={styles.formField}>
-                  <ThemedText style={styles.label}>Couleur</ThemedText>
+                  <ThemedText style={styles.label}>{t('cars.form.color')}</ThemedText>
                   <TextInput
                     value={carForm.color}
                     onChangeText={(t) => setCarForm((p) => ({ ...p, color: t }))}
-                    placeholder="Noir, Blanc..."
+                    placeholder={t('cars.placeholders.colorExample')}
                     placeholderTextColor="#94a3b8"
                     style={styles.input}
                   />
                 </View>
                 <View style={styles.formField}>
-                  <ThemedText style={styles.label}>Portes</ThemedText>
+                  <ThemedText style={styles.label}>{t('cars.form.doors')}</ThemedText>
                   <TextInput
                     value={carForm.ports}
                     onChangeText={(t) => setCarForm((p) => ({ ...p, ports: t.replace(/[^\d]/g, '') }))}
-                    placeholder="4"
+                    placeholder={t('cars.placeholders.doorsExample')}
                     keyboardType="numeric"
                     placeholderTextColor="#94a3b8"
                     style={styles.input}
@@ -1523,7 +1885,7 @@ export default function CarsScreen() {
               </View>
 
               <View style={styles.chipsGroup}>
-                <ThemedText style={styles.label}>Boîte</ThemedText>
+                <ThemedText style={styles.label}>{t('cars.form.gearbox')}</ThemedText>
                 <View style={styles.chipsRow}>
                   {(['manuelle', 'auto', 'semi-auto'] as const).map((v) => (
                     <TouchableOpacity
@@ -1532,14 +1894,20 @@ export default function CarsScreen() {
                       onPress={() => setCarForm((p) => ({ ...p, boite: p.boite === v ? '' : v }))}
                       style={[styles.chip, carForm.boite === v && styles.chipActive]}
                     >
-                      <ThemedText style={[styles.chipText, carForm.boite === v && styles.chipTextActive]}>{v}</ThemedText>
+                      <ThemedText style={[styles.chipText, carForm.boite === v && styles.chipTextActive]}>
+                        {v === 'manuelle'
+                          ? t('home.filters.gearbox_manual')
+                          : v === 'auto'
+                          ? t('home.filters.gearbox_auto')
+                          : t('home.filters.gearbox_semi')}
+                      </ThemedText>
                     </TouchableOpacity>
                   ))}
                 </View>
               </View>
 
               <View style={styles.chipsGroup}>
-                <ThemedText style={styles.label}>Carburant</ThemedText>
+                <ThemedText style={styles.label}>{t('cars.form.fuel')}</ThemedText>
                 <View style={styles.chipsRow}>
                   {(['diesel', 'essence', 'gaz', 'electrique'] as const).map((v) => (
                     <TouchableOpacity
@@ -1548,7 +1916,15 @@ export default function CarsScreen() {
                       onPress={() => setCarForm((p) => ({ ...p, type_gaz: p.type_gaz === v ? '' : v }))}
                       style={[styles.chip, carForm.type_gaz === v && styles.chipActive]}
                     >
-                      <ThemedText style={[styles.chipText, carForm.type_gaz === v && styles.chipTextActive]}>{v}</ThemedText>
+                      <ThemedText style={[styles.chipText, carForm.type_gaz === v && styles.chipTextActive]}>
+                        {v === 'diesel'
+                          ? t('home.filters.fuel_diesel')
+                          : v === 'essence'
+                          ? t('home.filters.fuel_petrol')
+                          : v === 'gaz'
+                          ? t('home.filters.fuel_gas')
+                          : t('home.filters.fuel_electric')}
+                      </ThemedText>
                     </TouchableOpacity>
                   ))}
                 </View>
@@ -1559,18 +1935,18 @@ export default function CarsScreen() {
                 <TextInput
                   value={carForm.type_enegine}
                   onChangeText={(t) => setCarForm((p) => ({ ...p, type_enegine: t }))}
-                  placeholder="Ex: 1.6L"
+                  placeholder={t('cars.placeholders.engineTypeExample')}
                   placeholderTextColor="#94a3b8"
                   style={styles.input}
                 />
               </View>
 
               <View style={styles.formField}>
-                <ThemedText style={styles.label}>Description</ThemedText>
+                <ThemedText style={styles.label}>{t('cars.form.description')}</ThemedText>
                 <TextInput
                   value={carForm.description}
                   onChangeText={(t) => setCarForm((p) => ({ ...p, description: t }))}
-                  placeholder="Décrivez la voiture..."
+                  placeholder={t('cars.placeholders.descriptionExample')}
                   placeholderTextColor="#94a3b8"
                   style={[styles.input, { height: scale(110), textAlignVertical: 'top', paddingTop: padding.medium }]}
                   multiline
@@ -1593,6 +1969,19 @@ export default function CarsScreen() {
         </View>
       </Modal>
 
+      {/* Upload Progress Modal (during image upload) */}
+      <Modal visible={showUploadModal} transparent animationType="fade" onRequestClose={() => {}}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.uploadProgressCard}>
+            <ThemedText style={styles.uploadProgressTitle}>{t('cars.creating')}</ThemedText>
+            <View style={styles.uploadProgressTrack}>
+              <View style={[styles.uploadProgressFill, { width: `${Math.max(0, Math.min(100, uploadPercent))}%` }]} />
+            </View>
+            <ThemedText style={styles.uploadProgressText}>{Math.max(0, Math.min(100, uploadPercent))}%</ThemedText>
+          </View>
+        </View>
+      </Modal>
+      {/* Upload progress modal removed as requested */}
       {/* Brand Picker Modal */}
       <Modal visible={showBrandPicker} transparent animationType="fade" onRequestClose={() => setShowBrandPicker(false)}>
         <TouchableOpacity
@@ -1602,7 +1991,7 @@ export default function CarsScreen() {
         >
           <View style={styles.brandPickerSheet}>
             <View style={styles.modalHeader}>
-              <ThemedText style={styles.modalTitle}>Sélectionner une marque</ThemedText>
+              <ThemedText style={styles.modalTitle}>{t('cars.selectBrand') || 'Select brand'}</ThemedText>
               <TouchableOpacity onPress={() => setShowBrandPicker(false)} style={styles.modalClose} activeOpacity={0.85}>
                 <IconSymbol name="xmark" size={scale(18)} color="#64748b" />
               </TouchableOpacity>
@@ -1668,14 +2057,14 @@ export default function CarsScreen() {
                   <TextInput
                     value={workshopFilters.searchName}
                     onChangeText={(text) => setWorkshopFilters((p) => ({ ...p, searchName: text }))}
-                    placeholder="Rechercher par nom..."
+                    placeholder={t('cars.placeholders.workshopSearchName')}
                     placeholderTextColor="#94a3b8"
                     style={styles.filterInput}
                   />
                   <TextInput
                     value={workshopFilters.searchAdr}
                     onChangeText={(text) => setWorkshopFilters((p) => ({ ...p, searchAdr: text }))}
-                    placeholder="Rechercher par adresse..."
+                    placeholder={t('cars.placeholders.workshopSearchAdr')}
                     placeholderTextColor="#94a3b8"
                     style={styles.filterInput}
                   />
@@ -1794,7 +2183,7 @@ export default function CarsScreen() {
                             month: 'long',
                             day: 'numeric',
                           })
-                        : 'Sélectionner une date'}
+                        : t('cars.selectDate')}
                     </ThemedText>
                   </View>
                   <IconSymbol name="chevron.right" size={scale(18)} color="#94a3b8" />
@@ -1887,7 +2276,7 @@ export default function CarsScreen() {
                   <TextInput
                     value={rdvForm.time}
                     onChangeText={(t) => setRdvForm((p) => ({ ...p, time: t.replace(/[^\d:]/g, '').slice(0, 5) }))}
-                    placeholder="Ex: 08:30"
+                    placeholder={t('cars.placeholders.timeExample')}
                     placeholderTextColor="#94a3b8"
                     style={styles.input}
                   />
@@ -2244,6 +2633,41 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.55)',
     justifyContent: 'flex-end',
+  },
+  uploadProgressCard: {
+    width: '86%',
+    maxWidth: scale(420),
+    backgroundColor: '#ffffff',
+    borderRadius: scale(18),
+    padding: padding.large,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    alignSelf: 'center',
+    alignItems: 'center',
+    marginBottom: '40%',
+  },
+  uploadProgressTitle: {
+    fontWeight: '900',
+    fontSize: fontSizes.lg,
+    color: '#0f172a',
+    marginBottom: padding.medium,
+    textAlign: 'center',
+  },
+  uploadProgressTrack: {
+    width: '100%',
+    height: scale(10),
+    backgroundColor: '#f1f5f9',
+    borderRadius: scale(999),
+    overflow: 'hidden',
+  },
+  uploadProgressFill: {
+    height: '100%',
+    backgroundColor: '#14b8a6',
+  },
+  uploadProgressText: {
+    marginTop: padding.small,
+    fontWeight: '800',
+    color: '#0f172a',
   },
   modalSheet: {
     backgroundColor: '#ffffff',

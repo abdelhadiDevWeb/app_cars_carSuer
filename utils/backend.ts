@@ -7,19 +7,43 @@
  * 
  * Make sure to restart the Expo server after changing .env file
  */
+import { DeviceEventEmitter } from 'react-native';
+
+function normalizeBackendUrl(rawUrl: string): string {
+  // Remove spaces/quotes and accidental leading "=" from .env formatting mistakes.
+  const trimmed = (rawUrl || '')
+    .trim()
+    .replace(/^['"]+|['"]+$/g, '')
+    .replace(/^=+/, '');
+
+  // Remove trailing slash if present.
+  const withoutTrailingSlash = trimmed.replace(/\/+$/, '');
+
+  // Ensure protocol exists, otherwise default to http.
+  const withProtocol = /^https?:\/\//i.test(withoutTrailingSlash)
+    ? withoutTrailingSlash
+    : `http://${withoutTrailingSlash}`;
+
+  try {
+    const parsed = new URL(withProtocol);
+    return parsed.origin;
+  } catch {
+    return 'http://localhost:8001';
+  }
+}
+
 export function getBackendUrl(): string {
   // In Expo, environment variables prefixed with EXPO_PUBLIC_ are available
   // They are loaded from .env file at build time
-  const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL || 
-                     process.env.EXPO_PUBLIC_URLBACKEND || 
-                     'http://localhost:8001';
-  
-  // Remove trailing slash if present
-  const cleanUrl = backendUrl.replace(/\/$/, '');
+  const rawBackendUrl =
+    process.env.EXPO_PUBLIC_BACKEND_URL ||
+    process.env.EXPO_PUBLIC_URLBACKEND ||
+    'http://localhost:8001';
+  const cleanUrl = normalizeBackendUrl(rawBackendUrl);
   
   // Log in development to help debug
   if (__DEV__) {
-    console.log('Backend URL:', cleanUrl);
+    console.log('Backend URL:', cleanUrl, '(raw:', rawBackendUrl, ')');
   }
   
   return cleanUrl;
@@ -70,10 +94,11 @@ export async function apiRequest(
 
   // Add token if available (from AsyncStorage)
   let token: string | null = null;
+  let AsyncStorage: any | null = null;
   try {
     // Import AsyncStorage dynamically
     const AsyncStorageModule = await import('@react-native-async-storage/async-storage');
-    const AsyncStorage = AsyncStorageModule.default;
+    AsyncStorage = AsyncStorageModule.default;
     token = await AsyncStorage.getItem('auth_token');
   } catch (error) {
     // If AsyncStorage is not available or fails, continue without token
@@ -99,6 +124,20 @@ export async function apiRequest(
         ...options.headers,
       },
     });
+
+    // If the backend says auth is invalid/expired, clear local token to stop request loops.
+    if (response.status === 401) {
+      // Always clear on auth failure to stop repeated calls with an expired JWT.
+      try {
+        const storage =
+          AsyncStorage ??
+          (await import('@react-native-async-storage/async-storage')).default;
+        await storage.removeItem('auth_token');
+        await storage.removeItem('auth_user');
+      } finally {
+        DeviceEventEmitter.emit('auth:expired');
+      }
+    }
 
     return response;
   } catch (error: any) {

@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { DeviceEventEmitter } from 'react-native';
 
 interface User {
   _id: string;
@@ -33,18 +34,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     loadAuthState();
   }, []);
 
+  // If the backend returns 401 (token expired/invalid), apiRequest will emit this event.
+  // We clear auth state so NavigationHandler redirects the user to login/splash and polling stops.
+  useEffect(() => {
+    const subscription = DeviceEventEmitter.addListener('auth:expired', () => {
+      void logout();
+    });
+
+    return () => {
+      subscription.remove();
+    };
+  }, []);
+
   const loadAuthState = async () => {
     try {
       const storedToken = await AsyncStorage.getItem('auth_token');
       const storedUser = await AsyncStorage.getItem('auth_user');
 
       if (storedToken && storedUser) {
-        setToken(storedToken);
-        setUser(JSON.parse(storedUser));
-        setIsAuthenticated(true);
+        try {
+          const parsedUser = JSON.parse(storedUser);
+          setToken(storedToken);
+          setUser(parsedUser);
+          setIsAuthenticated(true);
+        } catch (parseError) {
+          console.error('Error parsing stored user:', parseError);
+          // Clear invalid data
+          await AsyncStorage.removeItem('auth_token');
+          await AsyncStorage.removeItem('auth_user');
+        }
       }
     } catch (error) {
       console.error('Error loading auth state:', error);
+      // Ensure we don't get stuck in loading state
+      setIsAuthenticated(false);
     } finally {
       setIsLoading(false);
     }

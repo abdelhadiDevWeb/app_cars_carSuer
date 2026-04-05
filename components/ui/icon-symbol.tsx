@@ -77,6 +77,8 @@ const MAPPING = {
   'photo.fill': 'image',
   'star': 'star-border',
   'arrow.up.right': 'open-in-new',
+  // Language / globe
+  'globe': 'public',
 } as IconMapping;
 
 /**

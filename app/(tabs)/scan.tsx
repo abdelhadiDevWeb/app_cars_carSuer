@@ -20,6 +20,7 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { getPadding, getFontSizes, scale } from '@/utils/responsive';
 import { apiRequest } from '@/utils/backend';
 import { useRouter } from 'expo-router';
+import { useTranslation } from 'react-i18next';
 
 const padding = getPadding();
 const fontSizes = getFontSizes();
@@ -40,6 +41,7 @@ interface CarVerificationResult {
 }
 
 export default function ScanScreen() {
+  const { t } = useTranslation();
   const [isScanning, setIsScanning] = useState(false);
   const [permission, requestPermission] = useCameraPermissions();
   const [isVerifying, setIsVerifying] = useState(false);
@@ -87,9 +89,9 @@ export default function ScanScreen() {
       const result = await requestPermission();
       if (!result.granted) {
     Alert.alert(
-          'Permission requise',
-          'L\'accès à la caméra est nécessaire pour scanner les codes QR.',
-      [{ text: 'OK' }]
+          t('scan.permissionRequiredTitle'),
+          t('scan.permissionRequiredBody'),
+      [{ text: t('common.ok') }]
     );
         return;
       }
@@ -142,7 +144,7 @@ export default function ScanScreen() {
       setVerificationResult({
         ok: false,
         verified: false,
-        message: error?.message || 'Erreur lors de la vérification du véhicule',
+        message: error?.message || t('scan.verifying'),
       });
       finishVerifyingWithMinDelay();
     }
@@ -223,7 +225,7 @@ export default function ScanScreen() {
               {/* Bottom info */}
               <View style={styles.bottomInfo}>
                 <ThemedText style={styles.scanningText}>
-                  Positionnez le code QR dans le cadre
+                  {t('scan.positionQr')}
                 </ThemedText>
               </View>
             </View>
@@ -244,10 +246,10 @@ export default function ScanScreen() {
               >
                 <ActivityIndicator size="large" color="#ffffff" />
                 <ThemedText style={styles.modalTitle}>
-                  Vérification en cours...
+                  {t('scan.verifying')}
                 </ThemedText>
                 <ThemedText style={styles.modalSubtitle}>
-                  Veuillez patienter pendant que nous vérifions le véhicule
+                  {t('scan.verifyingSubtitle')}
                 </ThemedText>
               </LinearGradient>
             </View>
@@ -366,9 +368,9 @@ export default function ScanScreen() {
                 <IconSymbol name="qrcode.viewfinder" size={scale(48)} color="#ffffff" />
               </LinearGradient>
             </View>
-            <ThemedText style={styles.title}>Scanner QR Code</ThemedText>
+            <ThemedText style={styles.title}>{t('tabs.scan')}</ThemedText>
             <ThemedText style={styles.subtitle}>
-              Scannez le code QR d'un véhicule pour accéder à son rapport de vérification
+              {t('scan.verifyingSubtitle')}
             </ThemedText>
           </LinearGradient>
         </Animated.View>
@@ -387,7 +389,7 @@ export default function ScanScreen() {
             >
               <IconSymbol name="qrcode.viewfinder" size={scale(32)} color="#ffffff" />
               <ThemedText style={styles.scanButtonText}>
-                Lancer le scanner
+                {t('tabs.scan')}
               </ThemedText>
             </LinearGradient>
           </TouchableOpacity>
@@ -396,7 +398,7 @@ export default function ScanScreen() {
             <View style={styles.permissionWarning}>
               <IconSymbol name="exclamationmark.triangle.fill" size={scale(24)} color="#f59e0b" />
               <ThemedText style={styles.permissionWarningText}>
-                L'accès à la caméra est requis pour scanner les codes QR.
+                {t('scan.permissionRequiredBody')}
               </ThemedText>
             </View>
           )}
@@ -404,7 +406,7 @@ export default function ScanScreen() {
           <View style={styles.infoContainer}>
             <IconSymbol name="info.circle.fill" size={scale(24)} color="#0d9488" />
             <ThemedText style={styles.infoText}>
-              Utilisez le scanner pour vérifier l'authenticité d'un véhicule en scannant son code QR unique.
+              {t('car.qrSubtitle')}
             </ThemedText>
           </View>
         </View>
@@ -452,13 +454,14 @@ const styles = StyleSheet.create({
     fontSize: fontSizes['3xl'],
     fontWeight: '900',
     color: '#1f2937',
-    marginBottom: padding.small,
+    marginBottom: padding.medium,
     textAlign: 'center',
   },
   subtitle: {
     fontSize: fontSizes.md,
     color: '#64748b',
     textAlign: 'center',
+    marginTop: padding.small,
   },
   content: {
     paddingHorizontal: padding.horizontal,

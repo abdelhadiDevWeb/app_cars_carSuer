@@ -21,6 +21,7 @@ import { useRouter, useLocalSearchParams, useNavigation } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
 import { apiRequest, getImageUrl, getBackendUrl } from '@/utils/backend';
 import { getPadding, getFontSizes, scale } from '@/utils/responsive';
+import { useTranslation } from 'react-i18next';
 
 const padding = getPadding();
 const fontSizes = getFontSizes();
@@ -64,6 +65,7 @@ export default function CarDetailsPage() {
   const navigation = useNavigation();
   const params = useLocalSearchParams();
   const { isAuthenticated, user } = useAuth();
+  const { t } = useTranslation();
   const carId = params.id as string;
   
   const [car, setCar] = useState<Car | null>(null);
@@ -84,7 +86,7 @@ export default function CarDetailsPage() {
 
   useEffect(() => {
     if (!carId) {
-      setError('ID de voiture manquant');
+      setError(t('car.missingId'));
       setLoading(false);
       return;
     }
@@ -96,7 +98,7 @@ export default function CarDetailsPage() {
         
         if (!response.ok) {
           const data = await response.json().catch(() => ({}));
-          setError(data?.message || 'Voiture non trouvée');
+          setError(data?.message || t('car.notFound'));
           setLoading(false);
           return;
         }
@@ -105,11 +107,11 @@ export default function CarDetailsPage() {
         if (data.ok && data.car) {
           setCar(data.car);
         } else {
-          setError('Voiture non trouvée');
+          setError(t('car.notFound'));
         }
       } catch (err: any) {
         console.error('Error fetching car:', err);
-        setError(err?.message || 'Erreur lors du chargement');
+        setError(err?.message || t('car.loadError'));
       } finally {
         setLoading(false);
       }
@@ -164,13 +166,13 @@ export default function CarDetailsPage() {
 
   const handleChatPress = () => {
     if (!isAuthenticated) {
-      Alert.alert('Connexion requise', 'Veuillez vous connecter pour contacter le vendeur');
+      Alert.alert(t('car.contactRequiredTitle'), t('car.contactRequiredBody'));
       router.push('/login');
       return;
     }
 
     if (!car?.owner || typeof car.owner === 'string') {
-      Alert.alert('Erreur', 'Informations du vendeur non disponibles');
+      Alert.alert(t('car.sellerInfoUnavailableTitle'), t('car.sellerInfoUnavailableBody'));
       return;
     }
 
@@ -178,10 +180,10 @@ export default function CarDetailsPage() {
   };
 
   const statusMeta: Record<string, { label: string; colors: [string, string] }> = {
-    no_proccess: { label: 'En traitement', colors: ['#64748b', '#475569'] },
-    en_attente: { label: 'En attente', colors: ['#f59e0b', '#d97706'] },
-    actif: { label: 'Certifié', colors: ['#22c55e', '#16a34a'] },
-    vendue: { label: 'Vendue', colors: ['#ef4444', '#dc2626'] },
+    no_proccess: { label: t('home.status_notProcessed'), colors: ['#64748b', '#475569'] },
+    en_attente: { label: t('home.status_pending'), colors: ['#f59e0b', '#d97706'] },
+    actif: { label: t('home.status_active'), colors: ['#22c55e', '#16a34a'] },
+    vendue: { label: t('home.status_sold'), colors: ['#ef4444', '#dc2626'] },
   };
 
   if (loading) {
@@ -190,7 +192,7 @@ export default function CarDetailsPage() {
         <StatusBar style="dark" />
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color="#0d9488" />
-          <ThemedText style={styles.loadingText}>Chargement...</ThemedText>
+          <ThemedText style={styles.loadingText}>{t('common.loading')}</ThemedText>
         </View>
       </SafeAreaView>
     );
@@ -202,12 +204,12 @@ export default function CarDetailsPage() {
         <StatusBar style="dark" />
         <View style={styles.errorContainer}>
           <IconSymbol name="exclamationmark.triangle.fill" size={scale(48)} color="#ef4444" />
-          <ThemedText style={styles.errorText}>{error || 'Voiture non trouvée'}</ThemedText>
+          <ThemedText style={styles.errorText}>{error || t('car.notFound')}</ThemedText>
           <TouchableOpacity
             onPress={() => router.back()}
             style={styles.backButton}
           >
-            <ThemedText style={styles.backButtonText}>Retour</ThemedText>
+            <ThemedText style={styles.backButtonText}>{t('car.back')}</ThemedText>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -218,7 +220,7 @@ export default function CarDetailsPage() {
   const carName = `${car.brand} ${car.model}`;
   const ownerName = typeof car.owner === 'object' 
     ? `${car.owner.firstName} ${car.owner.lastName}` 
-    : 'Vendeur';
+    : t('car.seller');
   const isOwner = isAuthenticated && user?._id && typeof car.owner === 'object' && car.owner._id === user._id;
 
   // Generate QR code URL if car has QR - use getImageUrl to get the full URL
@@ -344,7 +346,7 @@ export default function CarDetailsPage() {
               </View>
               <View style={styles.priceContainer}>
                 <ThemedText style={styles.price}>{car.price?.toLocaleString() || 0}</ThemedText>
-                <ThemedText style={styles.priceUnit}>DA</ThemedText>
+                <ThemedText style={styles.priceUnit}>{t('home.priceCurrency')}</ThemedText>
               </View>
             </View>
 
@@ -353,8 +355,8 @@ export default function CarDetailsPage() {
               <View style={styles.detailItem}>
                 <IconSymbol name="speedometer" size={scale(20)} color="#0d9488" />
                 <View style={styles.detailContent}>
-                  <ThemedText style={styles.detailLabel}>Kilométrage</ThemedText>
-                  <ThemedText style={styles.detailValue}>{car.km?.toLocaleString() || 0} km</ThemedText>
+                  <ThemedText style={styles.detailLabel}>{t('home.filters.mileage')}</ThemedText>
+                  <ThemedText style={styles.detailValue}>{car.km?.toLocaleString() || 0} {t('home.mileageUnit')}</ThemedText>
                 </View>
               </View>
 
@@ -362,7 +364,7 @@ export default function CarDetailsPage() {
                 <View style={styles.detailItem}>
                   <IconSymbol name="paintbrush.fill" size={scale(20)} color="#0d9488" />
                   <View style={styles.detailContent}>
-                    <ThemedText style={styles.detailLabel}>Couleur</ThemedText>
+                    <ThemedText style={styles.detailLabel}>{t('home.filters.color')}</ThemedText>
                     <ThemedText style={styles.detailValue}>{car.color}</ThemedText>
                   </View>
                 </View>
@@ -372,7 +374,7 @@ export default function CarDetailsPage() {
                 <View style={styles.detailItem}>
                   <IconSymbol name="gearshape.fill" size={scale(20)} color="#0d9488" />
                   <View style={styles.detailContent}>
-                    <ThemedText style={styles.detailLabel}>Boîte</ThemedText>
+                    <ThemedText style={styles.detailLabel}>{t('home.filters.gearbox')}</ThemedText>
                     <ThemedText style={styles.detailValue}>
                       {car.boite === 'manuelle' ? 'Manuelle' : car.boite === 'auto' ? 'Automatique' : car.boite}
                     </ThemedText>
@@ -384,7 +386,7 @@ export default function CarDetailsPage() {
                 <View style={styles.detailItem}>
                   <IconSymbol name="fuel" size={scale(20)} color="#0d9488" />
                   <View style={styles.detailContent}>
-                    <ThemedText style={styles.detailLabel}>Carburant</ThemedText>
+                    <ThemedText style={styles.detailLabel}>{t('home.filters.fuel')}</ThemedText>
                     <ThemedText style={styles.detailValue}>
                       {car.type_gaz === 'diesel' ? 'Diesel' : 
                        car.type_gaz === 'essence' ? 'Essence' : 
@@ -399,7 +401,7 @@ export default function CarDetailsPage() {
                 <View style={styles.detailItem}>
                   <IconSymbol name="car.side.fill" size={scale(20)} color="#0d9488" />
                   <View style={styles.detailContent}>
-                    <ThemedText style={styles.detailLabel}>Portes</ThemedText>
+                    <ThemedText style={styles.detailLabel}>{t('home.filters.doorsPlaceholder')}</ThemedText>
                     <ThemedText style={styles.detailValue}>{car.ports}</ThemedText>
                   </View>
                 </View>
@@ -423,9 +425,9 @@ export default function CarDetailsPage() {
                     color={car.accident ? "#ef4444" : "#22c55e"} 
                   />
                   <View style={styles.detailContent}>
-                    <ThemedText style={styles.detailLabel}>Accident</ThemedText>
+                    <ThemedText style={styles.detailLabel}>{t('home.filters.accident')}</ThemedText>
                     <ThemedText style={[styles.detailValue, car.accident && styles.accidentYes]}>
-                      {car.accident ? 'Oui' : 'Non'}
+                      {car.accident ? t('common.ok') : t('home.filters.accident_no')}
                     </ThemedText>
                   </View>
                 </View>
@@ -435,7 +437,7 @@ export default function CarDetailsPage() {
             {/* Description */}
             {car.description && (
               <View style={styles.descriptionContainer}>
-                <ThemedText style={styles.descriptionLabel}>Description</ThemedText>
+                <ThemedText style={styles.descriptionLabel}>{t('car.description') || 'Description'}</ThemedText>
                 <ThemedText style={styles.descriptionText}>{car.description}</ThemedText>
               </View>
             )}
@@ -455,11 +457,11 @@ export default function CarDetailsPage() {
               >
                 <View style={styles.ownerHeader}>
                   <IconSymbol name="person.fill" size={scale(20)} color="#0d9488" />
-                  <ThemedText style={styles.ownerTitle}>Vendeur</ThemedText>
+                  <ThemedText style={styles.ownerTitle}>{t('car.seller')}</ThemedText>
                   {car.owner.certifie && (
                     <View style={styles.certifiedBadge}>
                       <IconSymbol name="checkmark.seal.fill" size={scale(14)} color="#ffffff" />
-                      <ThemedText style={styles.certifiedText}>Certifié</ThemedText>
+                      <ThemedText style={styles.certifiedText}>{t('home.certified')}</ThemedText>
                     </View>
                   )}
                 </View>
@@ -468,7 +470,7 @@ export default function CarDetailsPage() {
                   <ThemedText style={styles.ownerPhone}>{car.owner.phone}</ThemedText>
                 )}
                 <View style={styles.viewProfileHint}>
-                  <ThemedText style={styles.viewProfileText}>Voir le profil →</ThemedText>
+                  <ThemedText style={styles.viewProfileText}>{t('car.viewProfile') || 'View profile →'}</ThemedText>
                 </View>
               </TouchableOpacity>
             )}
@@ -489,7 +491,7 @@ export default function CarDetailsPage() {
                 <View style={styles.qrIconContainer}>
                   <IconSymbol name="qrcode.viewfinder" size={scale(24)} color="#0d9488" />
                 </View>
-                <ThemedText style={styles.qrTitle}>Code QR de vérification</ThemedText>
+                <ThemedText style={styles.qrTitle}>{t('car.qrTitle')}</ThemedText>
               </View>
 
               <View style={styles.qrCodeContainer}>
@@ -507,9 +509,7 @@ export default function CarDetailsPage() {
                 </LinearGradient>
               </View>
 
-              <ThemedText style={styles.qrDescription}>
-                Scannez ce code QR pour vérifier le statut de vérification de ce véhicule
-              </ThemedText>
+              <ThemedText style={styles.qrDescription}>{t('car.qrSubtitle')}</ThemedText>
             </LinearGradient>
           </Animated.View>
         )}
@@ -533,7 +533,7 @@ export default function CarDetailsPage() {
                     <IconSymbol name="checkmark.circle.fill" size={scale(24)} color="#ffffff" />
                   </LinearGradient>
                 </View>
-                <ThemedText style={styles.verificationTitle}>Rapport de vérification</ThemedText>
+                <ThemedText style={styles.verificationTitle}>{t('car.reportTitle')}</ThemedText>
               </View>
 
               {appointments.map((appointment: any, idx: number) => (
@@ -553,7 +553,7 @@ export default function CarDetailsPage() {
                       style={styles.workshopInfoCard}
                       activeOpacity={0.8}
                     >
-                      <ThemedText style={styles.workshopInfoLabel}>Atelier de vérification</ThemedText>
+                      <ThemedText style={styles.workshopInfoLabel}>{t('car.workshopLabel')}</ThemedText>
                       <View style={styles.workshopInfoRow}>
                         {workshopImages[appointment.id_workshop._id || appointment.id_workshop.id || appointment.id_workshop] ? (
                           <Image
@@ -570,18 +570,18 @@ export default function CarDetailsPage() {
                         )}
                         <View style={styles.workshopInfo}>
                           <ThemedText style={styles.workshopName}>
-                            {appointment.id_workshop.name || 'Atelier'}
+                            {appointment.id_workshop.name || t('workshops.title')}
                           </ThemedText>
                           {appointment.id_workshop.certifie && (
                             <View style={styles.workshopCertifiedBadge}>
                               <IconSymbol name="checkmark.seal.fill" size={scale(12)} color="#22c55e" />
-                              <ThemedText style={styles.certifiedBadgeText}>Certifié</ThemedText>
+                              <ThemedText style={styles.certifiedBadgeText}>{t('workshops.certified')}</ThemedText>
                             </View>
                           )}
                         </View>
                       </View>
                       <View style={styles.viewProfileHint}>
-                        <ThemedText style={styles.viewProfileText}>Voir le profil →</ThemedText>
+                        <ThemedText style={styles.viewProfileText}>{t('car.viewProfile') || 'View profile →'}</ThemedText>
                       </View>
                     </TouchableOpacity>
                   )}
@@ -592,7 +592,7 @@ export default function CarDetailsPage() {
                       <View style={styles.verificationImagesHeader}>
                         <IconSymbol name="photo.fill" size={scale(18)} color="#9333ea" />
                         <ThemedText style={styles.verificationImagesTitle}>
-                          Images de vérification ({appointment.images.length})
+                          {t('car.imagesLabel')} ({appointment.images.length})
                         </ThemedText>
                       </View>
                       <View style={styles.verificationImagesGrid}>
@@ -614,7 +614,7 @@ export default function CarDetailsPage() {
                     <View style={styles.pdfSection}>
                       <View style={styles.pdfHeader}>
                         <IconSymbol name="doc.fill" size={scale(18)} color="#9333ea" />
-                        <ThemedText style={styles.pdfTitle}>Rapport PDF</ThemedText>
+                        <ThemedText style={styles.pdfTitle}>PDF</ThemedText>
                       </View>
                       <TouchableOpacity
                         onPress={async () => {
@@ -624,11 +624,11 @@ export default function CarDetailsPage() {
                             if (canOpen) {
                               await Linking.openURL(pdfUrl);
                             } else {
-                              Alert.alert('Erreur', 'Impossible d\'ouvrir le PDF');
+                              Alert.alert(t('common.error'), "Impossible d'ouvrir le PDF");
                             }
                           } catch (error) {
                             console.error('Error opening PDF:', error);
-                            Alert.alert('Erreur', 'Impossible d\'ouvrir le PDF');
+                            Alert.alert(t('common.error'), "Impossible d'ouvrir le PDF");
                           }
                         }}
                         style={styles.pdfButton}
@@ -639,7 +639,7 @@ export default function CarDetailsPage() {
                           style={styles.pdfButtonGradient}
                         >
                           <IconSymbol name="doc.fill" size={scale(20)} color="#ffffff" />
-                          <ThemedText style={styles.pdfButtonText}>Voir le rapport PDF</ThemedText>
+                          <ThemedText style={styles.pdfButtonText}>PDF</ThemedText>
                           <IconSymbol name="arrow.up.right" size={scale(16)} color="#ffffff" />
                         </LinearGradient>
                       </TouchableOpacity>

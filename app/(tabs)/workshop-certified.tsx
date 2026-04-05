@@ -17,6 +17,7 @@ import { ThemedText } from '@/components/themed-text';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { getPadding, getFontSizes, scale } from '@/utils/responsive';
 import { apiRequest, getImageUrl } from '@/utils/backend';
+import { useTranslation } from 'react-i18next';
 
 const padding = getPadding();
 const fontSizes = getFontSizes();
@@ -39,6 +40,7 @@ interface Workshop {
 type SectionType = 'all' | 'certified' | 'not_certified';
 
 export default function WorkshopCertifiedScreen() {
+  const { t } = useTranslation();
   const [workshops, setWorkshops] = useState<Workshop[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -130,11 +132,11 @@ export default function WorkshopCertifiedScreen() {
   const getTypeLabel = (type: string) => {
     switch (type) {
       case 'paint_vehicle':
-        return 'Peinture';
+        return t('workshops.type_paint');
       case 'mechanic':
-        return 'Mécanique';
+        return t('workshops.type_mechanic');
       case 'mechanic_paint_inspector':
-        return 'Mécanique & Peinture';
+        return t('workshops.type_both');
       default:
         return type;
     }
@@ -189,9 +191,9 @@ export default function WorkshopCertifiedScreen() {
                 <IconSymbol name="shield.fill" size={scale(48)} color="#ffffff" />
               </LinearGradient>
             </View>
-            <ThemedText style={styles.title}>Ateliers</ThemedText>
+            <ThemedText style={styles.title}>{t('workshops.title')}</ThemedText>
             <ThemedText style={styles.subtitle}>
-              Trouvez un atelier de vérification près de chez vous
+              {t('workshops.subtitle')}
             </ThemedText>
           </LinearGradient>
         </Animated.View>
@@ -205,7 +207,7 @@ export default function WorkshopCertifiedScreen() {
             <IconSymbol name="magnifyingglass" size={scale(20)} color="#94a3b8" />
             <TextInput
               style={styles.searchInput}
-              placeholder="Rechercher par nom ou adresse..."
+              placeholder={t('workshops.searchPlaceholder')}
               placeholderTextColor="#94a3b8"
               value={searchQuery}
               onChangeText={setSearchQuery}
@@ -237,7 +239,7 @@ export default function WorkshopCertifiedScreen() {
               style={styles.sectionTabGradient}
             >
               <ThemedText style={[styles.sectionTabText, activeSection === 'all' && styles.sectionTabTextActive]}>
-                Tous ({workshops.length})
+                {t('workshops.all')} ({workshops.length})
               </ThemedText>
             </LinearGradient>
           </TouchableOpacity>
@@ -258,14 +260,18 @@ export default function WorkshopCertifiedScreen() {
                 style={{ marginRight: scale(4) }}
               />
               <ThemedText style={[styles.sectionTabText, activeSection === 'certified' && styles.sectionTabTextActive]}>
-                Certifiés ({workshops.filter(w => w.certifie).length})
+                {t('workshops.certified')} ({workshops.filter(w => w.certifie).length})
               </ThemedText>
             </LinearGradient>
           </TouchableOpacity>
 
           <TouchableOpacity
             onPress={() => setActiveSection('not_certified')}
-            style={[styles.sectionTab, activeSection === 'not_certified' && styles.sectionTabActive]}
+            style={[
+              styles.sectionTab,
+              styles.sectionTabWide,
+              activeSection === 'not_certified' && styles.sectionTabActive,
+            ]}
             activeOpacity={0.85}
           >
             <LinearGradient
@@ -273,7 +279,7 @@ export default function WorkshopCertifiedScreen() {
               style={styles.sectionTabGradient}
             >
               <ThemedText style={[styles.sectionTabText, activeSection === 'not_certified' && styles.sectionTabTextActive]}>
-                Non Certifiés ({workshops.filter(w => !w.certifie).length})
+                {t('workshops.notCertified')} ({workshops.filter(w => !w.certifie).length})
               </ThemedText>
             </LinearGradient>
           </TouchableOpacity>
@@ -283,7 +289,7 @@ export default function WorkshopCertifiedScreen() {
         {loading ? (
           <View style={styles.loadingContainer}>
             <ActivityIndicator size="large" color="#0d9488" />
-            <ThemedText style={styles.loadingText}>Chargement des ateliers...</ThemedText>
+            <ThemedText style={styles.loadingText}>{t('workshops.loading')}</ThemedText>
           </View>
         ) : filteredWorkshops.length === 0 ? (
           <View style={styles.emptyContainer}>
@@ -333,7 +339,7 @@ export default function WorkshopCertifiedScreen() {
                       {workshop.certifie && (
                         <View style={styles.certifiedBadge}>
                           <IconSymbol name="checkmark.seal.fill" size={scale(14)} color="#10b981" />
-                          <ThemedText style={styles.certifiedBadgeText}>Certifié</ThemedText>
+                          <ThemedText style={styles.certifiedBadgeText}>{t('workshops.certified')}</ThemedText>
                         </View>
                       )}
                     </View>
@@ -422,13 +428,14 @@ const styles = StyleSheet.create({
     fontSize: fontSizes['3xl'],
     fontWeight: '900',
     color: '#1f2937',
-    marginBottom: padding.small,
+    marginBottom: padding.medium,
     textAlign: 'center',
   },
   subtitle: {
     fontSize: fontSizes.md,
     color: '#64748b',
     textAlign: 'center',
+    marginTop: padding.small,
   },
   searchContainer: {
     paddingHorizontal: padding.horizontal,
@@ -457,12 +464,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     paddingHorizontal: padding.horizontal,
     marginBottom: padding.large,
-    gap: padding.small,
+    gap: scale(6),
   },
   sectionTab: {
     flex: 1,
     borderRadius: scale(12),
     overflow: 'hidden',
+  },
+  sectionTabWide: {
+    flex: 1.25,
   },
   sectionTabActive: {
     // Active state handled by gradient

@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   Platform,
   KeyboardAvoidingView,
+  AppState,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -29,8 +30,9 @@ import Animated, {
 import { ThemedText } from '@/components/themed-text';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAuth } from '@/contexts/AuthContext';
-import { apiRequest, getImageUrl } from '@/utils/backend';
+import { apiRequest, getImageUrl, getBackendUrl } from '@/utils/backend';
 import { useNotifications } from '@/hooks/useNotifications';
+import { useTranslation } from 'react-i18next';
 import {
   getPadding,
   getFontSizes,
@@ -46,6 +48,7 @@ const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpaci
 export default function ProfileScreen() {
   const { isAuthenticated, user, logout, refreshUser } = useAuth();
   const { unreadCount } = useNotifications();
+  const { t } = useTranslation();
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(true);
   const [userData, setUserData] = useState<any>(null);
@@ -98,6 +101,18 @@ export default function ProfileScreen() {
     // Entrance animations
     headerScale.value = withSpring(1, { damping: 12, stiffness: 100 });
     statsOpacity.value = withTiming(1, { duration: 800 });
+  }, []);
+
+  // Refresh on app foreground
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        fetchUserData();
+        fetchUserImage();
+        fetchSubscription();
+      }
+    });
+    return () => sub.remove();
   }, []);
 
   const fetchUserData = async () => {
@@ -177,7 +192,7 @@ export default function ProfileScreen() {
       const difference = endDate - now;
 
       if (difference <= 0) {
-        setTimeRemaining('Expiré');
+      setTimeRemaining(t('subscription.expired'));
         return;
       }
 
@@ -205,7 +220,7 @@ export default function ProfileScreen() {
     try {
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert('Permission requise', 'Nous avons besoin de la permission pour accéder à vos photos.');
+        Alert.alert(t('profile.permissionPhotos'), t('profile.permissionPhotosBody'));
         return;
       }
 
@@ -221,7 +236,7 @@ export default function ProfileScreen() {
       }
     } catch (error) {
       console.error('Error picking image:', error);
-      Alert.alert('Erreur', 'Impossible de sélectionner l\'image');
+      Alert.alert(t('common.error'), t('errors.selectImageFailed'));
     }
   };
 
@@ -241,10 +256,7 @@ export default function ProfileScreen() {
 
       // For FormData, we need to let fetch set Content-Type automatically (with boundary)
       // So we'll make a direct fetch call instead of using apiRequest
-      const backendUrl = process.env.EXPO_PUBLIC_BACKEND_URL || 
-                         process.env.EXPO_PUBLIC_URLBACKEND || 
-                         'http://localhost:8001';
-      const cleanUrl = backendUrl.replace(/\/$/, '');
+      const cleanUrl = getBackendUrl().replace(/\/$/, '');
       const url = `${cleanUrl}/api/user-image/upload`;
 
       // Get token
@@ -267,15 +279,15 @@ export default function ProfileScreen() {
         const data = await response.json();
         if (data.ok && data.userImage?.image) {
           setUserImage(getImageUrl(data.userImage.image));
-          Alert.alert('Succès', 'Photo de profil mise à jour');
+          Alert.alert(t('common.success'), t('profile.photoUpdated'));
         }
       } else {
         const errorData = await response.json();
-        Alert.alert('Erreur', errorData.message || 'Impossible de mettre à jour la photo');
+        Alert.alert(t('common.error'), errorData.message || t('errors.updatePhotoFailed'));
       }
     } catch (error) {
       console.error('Error uploading image:', error);
-      Alert.alert('Erreur', 'Impossible de télécharger l\'image');
+      Alert.alert(t('common.error'), t('errors.uploadImageFailed'));
     } finally {
       setIsUploadingImage(false);
     }
@@ -283,7 +295,7 @@ export default function ProfileScreen() {
 
   const handleUpdateProfile = async () => {
     if (!editForm.firstName.trim() || !editForm.lastName.trim()) {
-      Alert.alert('Erreur', 'Le prénom et le nom sont requis');
+      Alert.alert(t('common.error'), t('profile.nameRequired'));
       return;
     }
 
@@ -300,15 +312,15 @@ export default function ProfileScreen() {
           await refreshUser();
           await fetchUserData();
           setShowEditModal(false);
-          Alert.alert('Succès', 'Profil mis à jour avec succès');
+          Alert.alert(t('common.success'), t('profile.profileUpdated'));
         }
       } else {
         const errorData = await response.json();
-        Alert.alert('Erreur', errorData.message || 'Impossible de mettre à jour le profil');
+        Alert.alert(t('common.error'), errorData.message || t('errors.updateProfileFailed'));
       }
     } catch (error) {
       console.error('Error updating profile:', error);
-      Alert.alert('Erreur', 'Impossible de mettre à jour le profil');
+      Alert.alert(t('common.error'), t('errors.updateProfileFailed'));
     } finally {
       setIsUpdating(false);
     }
@@ -316,17 +328,17 @@ export default function ProfileScreen() {
 
   const handleChangePassword = async () => {
     if (!passwordForm.currentPassword || !passwordForm.newPassword || !passwordForm.confirmPassword) {
-      Alert.alert('Erreur', 'Tous les champs sont requis');
+      Alert.alert(t('common.error'), t('profile.allFieldsRequired'));
       return;
     }
 
     if (passwordForm.newPassword !== passwordForm.confirmPassword) {
-      Alert.alert('Erreur', 'Les nouveaux mots de passe ne correspondent pas');
+      Alert.alert(t('common.error'), t('profile.passwordsNoMatch'));
       return;
     }
 
     if (passwordForm.newPassword.length < 8) {
-      Alert.alert('Erreur', 'Le mot de passe doit contenir au moins 8 caractères');
+      Alert.alert(t('common.error'), t('profile.passwordMin8'));
       return;
     }
 
@@ -345,15 +357,15 @@ export default function ProfileScreen() {
         if (data.ok) {
           setShowPasswordModal(false);
           setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' });
-          Alert.alert('Succès', 'Mot de passe modifié avec succès');
+          Alert.alert(t('common.success'), t('profile.passwordUpdated'));
         }
       } else {
         const errorData = await response.json();
-        Alert.alert('Erreur', errorData.message || 'Impossible de modifier le mot de passe');
+        Alert.alert(t('common.error'), errorData.message || t('errors.changePasswordFailed'));
       }
     } catch (error) {
       console.error('Error changing password:', error);
-      Alert.alert('Erreur', 'Impossible de modifier le mot de passe');
+      Alert.alert(t('common.error'), t('errors.changePasswordFailed'));
     } finally {
       setIsUpdating(false);
     }
@@ -361,12 +373,12 @@ export default function ProfileScreen() {
 
   const handleLogout = () => {
     Alert.alert(
-      'Déconnexion',
-      'Êtes-vous sûr de vouloir vous déconnecter?',
+      t('profile.logoutTitle'),
+      t('profile.logoutConfirm'),
       [
-        { text: 'Annuler', style: 'cancel' },
+        { text: t('common.cancel'), style: 'cancel' },
         {
-          text: 'Déconnexion',
+          text: t('profile.logout'),
           style: 'destructive',
           onPress: async () => {
             await logout();
@@ -413,6 +425,23 @@ export default function ProfileScreen() {
     setShowEditModal(true);
   };
 
+  const getCountdownParts = () => {
+    if (!subscription?.date_end) {
+      return { days: 0, hours: 0, minutes: 0, seconds: 0, expired: true };
+    }
+    const diff = new Date(subscription.date_end).getTime() - Date.now();
+    if (diff <= 0) {
+      return { days: 0, hours: 0, minutes: 0, seconds: 0, expired: true };
+    }
+
+    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+    const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+    const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+
+    return { days, hours, minutes, seconds, expired: false };
+  };
+
   if (!isAuthenticated) {
     return null;
   }
@@ -422,11 +451,13 @@ export default function ProfileScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color="#0d9488" />
-          <ThemedText style={styles.loadingText}>Chargement...</ThemedText>
+          <ThemedText style={styles.loadingText}>{t('common.loading')}</ThemedText>
         </View>
       </SafeAreaView>
     );
   }
+
+  const countdown = getCountdownParts();
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -498,7 +529,7 @@ export default function ProfileScreen() {
               <ThemedText style={styles.userName}>
                 {userData?.firstName && userData?.lastName
                   ? `${userData.firstName} ${userData.lastName}`
-                  : userData?.email || 'Utilisateur'}
+                  : userData?.email || t('profile.defaultUser')}
               </ThemedText>
               <ThemedText style={styles.userEmail}>{userData?.email}</ThemedText>
 
@@ -522,7 +553,7 @@ export default function ProfileScreen() {
                       style={styles.badgeGradient}
                     >
                       <IconSymbol name="checkmark.circle.fill" size={14} color="#3b82f6" />
-                      <ThemedText style={styles.badgeText}>Actif</ThemedText>
+                      <ThemedText style={styles.badgeText}>{t('profile.active') || 'Active'}</ThemedText>
                     </LinearGradient>
                   </View>
                 )}
@@ -533,7 +564,7 @@ export default function ProfileScreen() {
                       style={styles.badgeGradient}
                     >
                       <IconSymbol name="star.fill" size={14} color="#f59e0b" />
-                      <ThemedText style={styles.badgeText}>Admin</ThemedText>
+                      <ThemedText style={styles.badgeText}>{t('profile.admin') || 'Admin'}</ThemedText>
                     </LinearGradient>
                   </View>
                 )}
@@ -543,7 +574,7 @@ export default function ProfileScreen() {
         </Animated.View>
 
         {/* Stats Cards */}
-        {stats && user?.type === 'user' && (
+        {false && stats && user?.type === 'user' && (
           <Animated.View
             entering={FadeInDown.duration(600).delay(200).springify()}
             style={[styles.statsContainer, statsAnimatedStyle]}
@@ -551,7 +582,7 @@ export default function ProfileScreen() {
             <View style={styles.statsRow}>
               <Animated.View
                 entering={FadeInDown.duration(600).delay(100).springify()}
-                style={styles.statCard}
+                style={[styles.statCard, styles.statCardActive]}
               >
                 <LinearGradient
                   colors={['rgba(255, 255, 255, 0.98)', 'rgba(255, 255, 255, 0.95)']}
@@ -576,7 +607,7 @@ export default function ProfileScreen() {
 
               <Animated.View
                 entering={FadeInDown.duration(600).delay(200).springify()}
-                style={styles.statCard}
+                style={[styles.statCard, styles.statCardRdv]}
               >
                 <LinearGradient
                   colors={['rgba(255, 255, 255, 0.98)', 'rgba(255, 255, 255, 0.95)']}
@@ -601,7 +632,7 @@ export default function ProfileScreen() {
 
               <Animated.View
                 entering={FadeInDown.duration(600).delay(300).springify()}
-                style={styles.statCard}
+                style={[styles.statCard, styles.statCardSold]}
               >
                 <LinearGradient
                   colors={['rgba(255, 255, 255, 0.98)', 'rgba(255, 255, 255, 0.95)']}
@@ -647,18 +678,22 @@ export default function ProfileScreen() {
                   </LinearGradient>
                 </View>
                 <View style={styles.subscriptionHeaderText}>
-                  <ThemedText style={styles.subscriptionTitle}>Abonnement Actif</ThemedText>
+                  <ThemedText style={styles.subscriptionTitle}>{t('subscription.activeTitle')}</ThemedText>
                   <ThemedText style={styles.subscriptionType}>
-                    {subscription.type_abonnement.name || 'Abonnement'}
+                    {subscription.type_abonnement.name || t('subscription.plan')}
                   </ThemedText>
+                </View>
+                <View style={styles.subscriptionStatusBadge}>
+                  <IconSymbol name="checkmark.circle.fill" size={14} color="#10b981" />
+                  <ThemedText style={styles.subscriptionStatusText}>{t('subscription.statusActive')}</ThemedText>
                 </View>
               </View>
 
               <View style={styles.subscriptionDetails}>
                 <View style={styles.subscriptionDetailRow}>
-                  <ThemedText style={styles.subscriptionDetailLabel}>Date de début</ThemedText>
+                  <ThemedText style={styles.subscriptionDetailLabel}>{t('subscription.startDate')}</ThemedText>
                   <ThemedText style={styles.subscriptionDetailValue}>
-                    {new Date(subscription.date_start).toLocaleDateString('fr-FR', {
+                    {new Date(subscription.date_start).toLocaleDateString(undefined, {
                       day: '2-digit',
                       month: '2-digit',
                       year: 'numeric',
@@ -666,9 +701,9 @@ export default function ProfileScreen() {
                   </ThemedText>
                 </View>
                 <View style={styles.subscriptionDetailRow}>
-                  <ThemedText style={styles.subscriptionDetailLabel}>Date de fin</ThemedText>
+                  <ThemedText style={styles.subscriptionDetailLabel}>{t('subscription.endDate')}</ThemedText>
                   <ThemedText style={styles.subscriptionDetailValue}>
-                    {new Date(subscription.date_end).toLocaleDateString('fr-FR', {
+                    {new Date(subscription.date_end).toLocaleDateString(undefined, {
                       day: '2-digit',
                       month: '2-digit',
                       year: 'numeric',
@@ -683,9 +718,34 @@ export default function ProfileScreen() {
                   colors={['#f0fdf4', '#dcfce7']}
                   style={styles.timerGradient}
                 >
-                  <IconSymbol name="clock.fill" size={20} color="#10b981" />
-                  <ThemedText style={styles.timerLabel}>Temps restant</ThemedText>
-                  <ThemedText style={styles.timerValue}>{timeRemaining || 'Calcul...'}</ThemedText>
+                  <View style={styles.timerHeader}>
+                    <IconSymbol name="clock.fill" size={18} color="#10b981" />
+                    <ThemedText style={styles.timerLabel}>Temps restant</ThemedText>
+                  </View>
+
+                  {countdown.expired ? (
+                    <ThemedText style={styles.timerValue}>Expiré</ThemedText>
+                  ) : (
+                    <View style={styles.timerBoxesRow}>
+                      <View style={styles.timerBox}>
+                        <ThemedText style={styles.timerBoxValue}>{countdown.days}</ThemedText>
+                        <ThemedText style={styles.timerBoxLabel}>{t('subscription.days')}</ThemedText>
+                      </View>
+                      <View style={styles.timerBox}>
+                        <ThemedText style={styles.timerBoxValue}>{countdown.hours}</ThemedText>
+                        <ThemedText style={styles.timerBoxLabel}>{t('subscription.hours')}</ThemedText>
+                      </View>
+                      <View style={styles.timerBox}>
+                        <ThemedText style={styles.timerBoxValue}>{countdown.minutes}</ThemedText>
+                        <ThemedText style={styles.timerBoxLabel}>{t('subscription.minutes')}</ThemedText>
+                      </View>
+                      <View style={styles.timerBox}>
+                        <ThemedText style={styles.timerBoxValue}>{countdown.seconds}</ThemedText>
+                        <ThemedText style={styles.timerBoxLabel}>{t('subscription.seconds')}</ThemedText>
+                      </View>
+                    </View>
+                  )}
+                  <ThemedText style={styles.timerSubValue}>{timeRemaining || t('subscription.calculating')}</ThemedText>
                 </LinearGradient>
               </View>
             </LinearGradient>
@@ -717,10 +777,8 @@ export default function ProfileScreen() {
                   </LinearGradient>
                 </View>
                 <View style={styles.actionTextContainer}>
-                  <ThemedText style={styles.actionTitle}>Modifier le profil</ThemedText>
-                  <ThemedText style={styles.actionSubtitle}>
-                    Mettre à jour vos informations
-                  </ThemedText>
+                  <ThemedText style={styles.actionTitle}>{t('profile.editProfile')}</ThemedText>
+                  <ThemedText style={styles.actionSubtitle}>{t('profile.updateInfo')}</ThemedText>
                 </View>
                 <IconSymbol name="chevron.right" size={20} color="#9ca3af" />
               </View>
@@ -747,10 +805,8 @@ export default function ProfileScreen() {
                   </LinearGradient>
                 </View>
                 <View style={styles.actionTextContainer}>
-                  <ThemedText style={styles.actionTitle}>Changer le mot de passe</ThemedText>
-                  <ThemedText style={styles.actionSubtitle}>
-                    Mettre à jour votre mot de passe
-                  </ThemedText>
+                  <ThemedText style={styles.actionTitle}>{t('profile.changePassword')}</ThemedText>
+                  <ThemedText style={styles.actionSubtitle}>{t('profile.updatePassword')}</ThemedText>
                 </View>
                 <IconSymbol name="chevron.right" size={20} color="#9ca3af" />
               </View>
@@ -778,10 +834,8 @@ export default function ProfileScreen() {
                     </LinearGradient>
                   </View>
                   <View style={styles.actionTextContainer}>
-                    <ThemedText style={styles.actionTitle}>Mes voitures</ThemedText>
-                    <ThemedText style={styles.actionSubtitle}>
-                      Gérer mes annonces
-                    </ThemedText>
+                    <ThemedText style={styles.actionTitle}>{t('cars.title')}</ThemedText>
+                    <ThemedText style={styles.actionSubtitle}>{t('profile.manageListings')}</ThemedText>
                   </View>
                   <IconSymbol name="chevron.right" size={20} color="#9ca3af" />
                 </View>
@@ -810,11 +864,9 @@ export default function ProfileScreen() {
                 </View>
                 <View style={styles.actionTextContainer}>
                   <ThemedText style={[styles.actionTitle, styles.logoutText]}>
-                    Se déconnecter
+                    {t('profile.logout')}
                   </ThemedText>
-                  <ThemedText style={styles.actionSubtitle}>
-                    Déconnexion de votre compte
-                  </ThemedText>
+                  <ThemedText style={styles.actionSubtitle}>{t('profile.logoutSubtitle')}</ThemedText>
                 </View>
                 <IconSymbol name="chevron.right" size={20} color="#9ca3af" />
               </View>
@@ -850,7 +902,7 @@ export default function ProfileScreen() {
               >
                 {/* Modal Header */}
                 <View style={styles.modalHeader}>
-                  <ThemedText style={styles.modalTitle}>Modifier le profil</ThemedText>
+                  <ThemedText style={styles.modalTitle}>{t('profile.editProfile')}</ThemedText>
                   <TouchableOpacity
                     onPress={() => setShowEditModal(false)}
                     style={styles.modalCloseButton}
@@ -862,33 +914,33 @@ export default function ProfileScreen() {
                 {/* Form */}
                 <ScrollView style={styles.modalForm} showsVerticalScrollIndicator={false}>
                   <View style={styles.inputContainer}>
-                    <ThemedText style={styles.inputLabel}>Prénom</ThemedText>
+                    <ThemedText style={styles.inputLabel}>{t('register.firstName')}</ThemedText>
                     <TextInput
                       style={styles.input}
                       value={editForm.firstName}
                       onChangeText={(text) =>
                         setEditForm({ ...editForm, firstName: text })
                       }
-                      placeholder="Prénom"
+                      placeholder={t('register.firstName')}
                       placeholderTextColor="#9ca3af"
                     />
                   </View>
 
                   <View style={styles.inputContainer}>
-                    <ThemedText style={styles.inputLabel}>Nom</ThemedText>
+                    <ThemedText style={styles.inputLabel}>{t('register.lastName')}</ThemedText>
                     <TextInput
                       style={styles.input}
                       value={editForm.lastName}
                       onChangeText={(text) =>
                         setEditForm({ ...editForm, lastName: text })
                       }
-                      placeholder="Nom"
+                      placeholder={t('register.lastName')}
                       placeholderTextColor="#9ca3af"
                     />
                   </View>
 
                   <View style={styles.inputContainer}>
-                    <ThemedText style={styles.inputLabel}>Téléphone</ThemedText>
+                    <ThemedText style={styles.inputLabel}>{t('register.phone')}</ThemedText>
                     <TextInput
                       style={styles.input}
                       value={editForm.phone}
@@ -902,7 +954,7 @@ export default function ProfileScreen() {
                   </View>
 
                   <View style={styles.inputContainer}>
-                    <ThemedText style={styles.inputLabel}>Email</ThemedText>
+                    <ThemedText style={styles.inputLabel}>{t('auth.email')}</ThemedText>
                     <TextInput
                       style={[styles.input, styles.inputDisabled]}
                       value={userData?.email || ''}
@@ -921,7 +973,7 @@ export default function ProfileScreen() {
                     onPress={() => setShowEditModal(false)}
                     style={styles.modalCancelButton}
                   >
-                    <ThemedText style={styles.modalCancelText}>Annuler</ThemedText>
+                    <ThemedText style={styles.modalCancelText}>{t('common.cancel')}</ThemedText>
                   </TouchableOpacity>
                   <TouchableOpacity
                     onPress={handleUpdateProfile}
@@ -935,7 +987,7 @@ export default function ProfileScreen() {
                       {isUpdating ? (
                         <ActivityIndicator color="#ffffff" />
                       ) : (
-                        <ThemedText style={styles.modalSaveText}>Enregistrer</ThemedText>
+                        <ThemedText style={styles.modalSaveText}>{t('common.save')}</ThemedText>
                       )}
                     </LinearGradient>
                   </TouchableOpacity>
@@ -973,7 +1025,7 @@ export default function ProfileScreen() {
               >
                 {/* Modal Header */}
                 <View style={styles.modalHeader}>
-                  <ThemedText style={styles.modalTitle}>Changer le mot de passe</ThemedText>
+                  <ThemedText style={styles.modalTitle}>{t('profile.changePassword')}</ThemedText>
                   <TouchableOpacity
                     onPress={() => {
                       setShowPasswordModal(false);
@@ -992,7 +1044,7 @@ export default function ProfileScreen() {
                 {/* Form */}
                 <ScrollView style={styles.modalForm} showsVerticalScrollIndicator={false}>
                   <View style={styles.inputContainer}>
-                    <ThemedText style={styles.inputLabel}>Mot de passe actuel</ThemedText>
+                    <ThemedText style={styles.inputLabel}>{t('profile.currentPassword')}</ThemedText>
                     <View style={styles.passwordInputWrapper}>
                       <TextInput
                         style={styles.passwordInput}
@@ -1106,7 +1158,7 @@ export default function ProfileScreen() {
                     }}
                     style={styles.modalCancelButton}
                   >
-                    <ThemedText style={styles.modalCancelText}>Annuler</ThemedText>
+                    <ThemedText style={styles.modalCancelText}>{t('common.cancel')}</ThemedText>
                   </TouchableOpacity>
                   <TouchableOpacity
                     onPress={handleChangePassword}
@@ -1314,16 +1366,16 @@ const styles = StyleSheet.create({
     zIndex: 1,
   },
   statsRow: {
-    flexDirection: 'row',
-    gap: scale(12),
+    flexDirection: 'column',
+    gap: scale(10),
   },
   statCard: {
-    flex: 1,
+    width: '100%',
     borderRadius: scale(20),
     overflow: 'hidden',
-    borderWidth: 2,
-    borderColor: '#e5e7eb',
-    height: scale(180),
+    borderWidth: 1.8,
+    borderColor: '#e2e8f0',
+    minHeight: scale(100),
     ...Platform.select({
       ios: {
         shadowColor: '#000',
@@ -1336,20 +1388,29 @@ const styles = StyleSheet.create({
       },
     }),
   },
+  statCardActive: {
+    borderColor: '#99f6e4',
+  },
+  statCardRdv: {
+    borderColor: '#bfdbfe',
+  },
+  statCardSold: {
+    borderColor: '#86efac',
+  },
   statCardBlur: {
-    padding: padding.large,
+    paddingVertical: padding.medium,
+    paddingHorizontal: padding.large,
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'space-between',
     backgroundColor: '#ffffff',
     borderRadius: scale(20),
-    height: '100%',
   },
   statIconContainer: {
     width: scale(56),
     height: scale(56),
     borderRadius: scale(28),
     overflow: 'hidden',
-    marginBottom: padding.medium,
     ...Platform.select({
       ios: {
         shadowColor: '#000',
@@ -1369,17 +1430,18 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   statValue: {
-    fontSize: fontSizes['3xl'],
+    fontSize: fontSizes['2xl'],
     fontWeight: '800',
     color: '#1f2937',
-    marginBottom: scale(6),
+    marginBottom: scale(2),
     letterSpacing: -0.5,
+    textAlign: 'right',
   },
   statLabel: {
     fontSize: fontSizes.sm,
     color: '#6b7280',
     fontWeight: '700',
-    textAlign: 'center',
+    textAlign: 'right',
     letterSpacing: 0.3,
   },
   subscriptionContainer: {
@@ -1390,8 +1452,8 @@ const styles = StyleSheet.create({
   subscriptionCard: {
     borderRadius: scale(20),
     padding: padding.large,
-    borderWidth: 2,
-    borderColor: '#e5e7eb',
+    borderWidth: 1.5,
+    borderColor: '#ddd6fe',
     ...Platform.select({
       ios: {
         shadowColor: '#000',
@@ -1436,6 +1498,22 @@ const styles = StyleSheet.create({
   subscriptionHeaderText: {
     flex: 1,
   },
+  subscriptionStatusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: scale(4),
+    paddingHorizontal: scale(10),
+    paddingVertical: scale(6),
+    borderRadius: scale(999),
+    backgroundColor: '#f0fdf4',
+    borderWidth: 1,
+    borderColor: '#bbf7d0',
+  },
+  subscriptionStatusText: {
+    fontSize: fontSizes.xs,
+    fontWeight: '800',
+    color: '#10b981',
+  },
   subscriptionTitle: {
     fontSize: fontSizes.lg,
     fontWeight: '800',
@@ -1472,15 +1550,21 @@ const styles = StyleSheet.create({
   timerContainer: {
     borderRadius: scale(16),
     overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: '#bbf7d0',
+    backgroundColor: '#ffffff',
   },
   timerGradient: {
+    gap: scale(10),
+    padding: padding.medium,
+    borderWidth: 1,
+    borderColor: '#86efac',
+  },
+  timerHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: scale(8),
-    padding: padding.medium,
-    borderWidth: 2,
-    borderColor: '#10b981',
+    gap: scale(6),
   },
   timerLabel: {
     fontSize: fontSizes.sm,
@@ -1491,7 +1575,39 @@ const styles = StyleSheet.create({
     fontSize: fontSizes.xl,
     fontWeight: '800',
     color: '#059669',
-    fontFamily: 'monospace',
+    textAlign: 'center',
+  },
+  timerBoxesRow: {
+    flexDirection: 'row',
+    gap: scale(6),
+    justifyContent: 'space-between',
+  },
+  timerBox: {
+    flex: 1,
+    backgroundColor: '#ffffff',
+    borderRadius: scale(10),
+    borderWidth: 1,
+    borderColor: '#d1fae5',
+    alignItems: 'center',
+    paddingVertical: scale(9),
+  },
+  timerBoxValue: {
+    fontSize: fontSizes.lg,
+    fontWeight: '900',
+    color: '#047857',
+    lineHeight: scale(20),
+    fontVariant: ['tabular-nums'],
+  },
+  timerBoxLabel: {
+    fontSize: fontSizes.xs,
+    fontWeight: '700',
+    color: '#10b981',
+  },
+  timerSubValue: {
+    fontSize: fontSizes.xs,
+    color: '#047857',
+    textAlign: 'center',
+    fontWeight: '700',
   },
   actionsContainer: {
     marginHorizontal: padding.large,

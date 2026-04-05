@@ -18,6 +18,7 @@ import { ThemedText } from '@/components/themed-text';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { apiRequest } from '@/utils/backend';
 import { SCREEN_WIDTH, getPadding, getFontSizes, scale } from '@/utils/responsive';
+import { useTranslation } from 'react-i18next';
 
 const padding = getPadding();
 const fontSizes = getFontSizes();
@@ -26,6 +27,7 @@ type RegisterType = 'client' | 'workshop' | null;
 
 export default function RegisterPage() {
   const router = useRouter();
+  const { t } = useTranslation();
   const [registerAs, setRegisterAs] = useState<RegisterType>(null);
   const [showVerification, setShowVerification] = useState(false);
   const [verificationEmail, setVerificationEmail] = useState('');
@@ -117,7 +119,7 @@ export default function RegisterPage() {
 
     if (registerAs === 'client') {
       if (userData.password !== userData.confirmPassword) {
-        setFormError('Les mots de passe ne correspondent pas');
+        setFormError(t('register.passwordsNoMatch'));
         setIsSubmitting(false);
         return;
       }
@@ -139,7 +141,7 @@ export default function RegisterPage() {
         } catch (jsonError) {
           // If response is not JSON, it's likely a network/server error
           console.error('Failed to parse JSON response:', jsonError);
-          setFormError(`Erreur serveur (${response.status}). Vérifiez que le backend est démarré.`);
+          setFormError(t('login.serverError', { status: response.status }));
           setIsSubmitting(false);
           return;
         }
@@ -147,9 +149,9 @@ export default function RegisterPage() {
         if (!response.ok) {
           if (data?.errors && Array.isArray(data.errors) && data.errors.length > 0) {
             setFormErrors(data.errors);
-            setFormError(data?.message || 'Erreur de validation');
+            setFormError(data?.message || t('register.validationError'));
           } else {
-            setFormError(data?.message || 'Erreur lors de l\'inscription');
+            setFormError(data?.message || t('register.registerError'));
             setFormErrors([]);
           }
           setIsSubmitting(false);
@@ -171,9 +173,13 @@ export default function RegisterPage() {
         setShowVerification(true);
       } catch (error: any) {
         console.error('Register User Error:', error);
-        const errorMessage = error?.message || 'Erreur de connexion';
+        const errorMessage = error?.message || t('login.connectionError');
         if (errorMessage.includes('fetch') || errorMessage.includes('network') || errorMessage.includes('Failed to connect') || errorMessage.includes('Impossible de se connecter')) {
-          setFormError('Impossible de se connecter au serveur. Vérifiez votre connexion internet et que le backend est démarré sur ' + (process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:8001'));
+          setFormError(
+            t('register.cannotConnect', {
+              url: process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:8001',
+            })
+          );
         } else {
           setFormError(errorMessage);
         }
@@ -183,7 +189,7 @@ export default function RegisterPage() {
 
     if (registerAs === 'workshop') {
       if (workshopData.password !== workshopData.confirmPassword) {
-        setFormError('Les mots de passe ne correspondent pas');
+        setFormError(t('register.passwordsNoMatch'));
         setIsSubmitting(false);
         return;
       }
@@ -206,7 +212,7 @@ export default function RegisterPage() {
         } catch (jsonError) {
           // If response is not JSON, it's likely a network/server error
           console.error('Failed to parse JSON response:', jsonError);
-          setFormError(`Erreur serveur (${response.status}). Vérifiez que le backend est démarré.`);
+          setFormError(t('login.serverError', { status: response.status }));
           setIsSubmitting(false);
           return;
         }
@@ -214,9 +220,9 @@ export default function RegisterPage() {
         if (!response.ok) {
           if (data?.errors && Array.isArray(data.errors) && data.errors.length > 0) {
             setFormErrors(data.errors);
-            setFormError(data?.message || 'Erreur de validation');
+            setFormError(data?.message || t('register.validationError'));
           } else {
-            setFormError(data?.message || 'Erreur lors de l\'inscription');
+            setFormError(data?.message || t('register.registerError'));
             setFormErrors([]);
           }
           setIsSubmitting(false);
@@ -239,9 +245,13 @@ export default function RegisterPage() {
         setShowVerification(true);
       } catch (error: any) {
         console.error('Register Workshop Error:', error);
-        const errorMessage = error?.message || 'Erreur de connexion';
+        const errorMessage = error?.message || t('login.connectionError');
         if (errorMessage.includes('fetch') || errorMessage.includes('network') || errorMessage.includes('Failed to connect') || errorMessage.includes('Impossible de se connecter')) {
-          setFormError('Impossible de se connecter au serveur. Vérifiez votre connexion internet et que le backend est démarré sur ' + (process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:8001'));
+          setFormError(
+            t('register.cannotConnect', {
+              url: process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:8001',
+            })
+          );
         } else {
           setFormError(errorMessage);
         }
@@ -254,12 +264,12 @@ export default function RegisterPage() {
     const normalizedCode = verificationCode.replace(/\D/g, '');
 
     if (normalizedCode.length !== 6) {
-      setCodeError('Le code doit contenir exactement 6 chiffres');
+      setCodeError(t('register.codeMustBe6'));
       return;
     }
 
     if (timeLeft <= 0) {
-      setCodeError('Le code a expiré. Veuillez vous réinscrire.');
+      setCodeError(t('register.codeExpired'));
       return;
     }
 
@@ -282,13 +292,13 @@ export default function RegisterPage() {
         data = await response.json();
       } catch (jsonError) {
         console.error('Failed to parse JSON response:', jsonError);
-        setCodeError(`Erreur serveur (${response.status}). Vérifiez que le backend est démarré.`);
+        setCodeError(t('login.serverError', { status: response.status }));
         setIsVerifying(false);
         return;
       }
 
       if (!response.ok) {
-        setCodeError(data?.message || 'Code invalide ou expiré');
+        setCodeError(data?.message || t('register.invalidOrExpired'));
         setIsVerifying(false);
         return;
       }
@@ -299,14 +309,18 @@ export default function RegisterPage() {
         setShowSuccessModal(true);
         setIsVerifying(false);
       } else {
-        setCodeError(data?.message || 'Erreur lors de la vérification');
+        setCodeError(data?.message || t('register.verifyError'));
         setIsVerifying(false);
       }
     } catch (error: any) {
       console.error('Verify Email Error:', error);
-      const errorMessage = error?.message || 'Erreur de connexion';
+      const errorMessage = error?.message || t('login.connectionError');
       if (errorMessage.includes('fetch') || errorMessage.includes('network') || errorMessage.includes('Failed to connect') || errorMessage.includes('Impossible de se connecter')) {
-        setCodeError('Impossible de se connecter au serveur. Vérifiez votre connexion internet et que le backend est démarré.');
+        setCodeError(
+          t('register.cannotConnect', {
+            url: process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:8001',
+          })
+        );
       } else {
         setCodeError(errorMessage);
       }
@@ -340,10 +354,10 @@ export default function RegisterPage() {
                   <IconSymbol name="message.fill" size={32} color="#10b981" />
                 </View>
                 <ThemedText style={styles.verificationTitle}>
-                  Vérifiez votre email
+                  {t('register.verifyCheckEmail')}
                 </ThemedText>
                 <ThemedText style={styles.verificationSubtitle}>
-                  Nous avons envoyé un code de vérification à
+                  {t('register.verifySentTo')}
                 </ThemedText>
                 <ThemedText style={styles.verificationEmail}>
                   {verificationEmail}
@@ -357,8 +371,10 @@ export default function RegisterPage() {
                   <IconSymbol name="checkmark.circle.fill" size={16} color={timeLeft > 0 ? '#3b82f6' : '#ef4444'} />
                   <ThemedText style={styles.timerText}>
                     {timeLeft > 0
-                      ? `Code valide pendant ${Math.floor(timeLeft / 60)}:${(timeLeft % 60).toString().padStart(2, '0')}`
-                      : 'Code expiré'}
+                      ? t('register.codeValidFor', {
+                          time: `${Math.floor(timeLeft / 60)}:${(timeLeft % 60).toString().padStart(2, '0')}`,
+                        })
+                      : t('register.codeExpiredShort')}
                   </ThemedText>
                 </View>
               </Animated.View>
@@ -374,7 +390,7 @@ export default function RegisterPage() {
                 >
                   <View style={styles.codeInputContainer}>
                     <ThemedText style={styles.codeLabel}>
-                      Code de vérification (6 chiffres)
+                      {t('register.verifyCodeLabel')}
                     </ThemedText>
                     <TextInput
                       style={[
@@ -387,7 +403,7 @@ export default function RegisterPage() {
                         setVerificationCode(value);
                         setCodeError('');
                       }}
-                      placeholder="000000"
+                      placeholder={t('register.verifyCodePlaceholder')}
                       placeholderTextColor="#9ca3af"
                       maxLength={6}
                       keyboardType="number-pad"
@@ -416,7 +432,7 @@ export default function RegisterPage() {
                         <ActivityIndicator color="#ffffff" />
                       ) : (
                         <ThemedText style={styles.verifyButtonText}>
-                          {timeLeft <= 0 ? 'Code expiré' : 'Vérifier'}
+                          {timeLeft <= 0 ? t('register.codeExpiredShort') : t('register.verify')}
                         </ThemedText>
                       )}
                     </LinearGradient>
@@ -434,7 +450,7 @@ export default function RegisterPage() {
                       style={styles.backToRegisterButton}
                     >
                       <ThemedText style={styles.backToRegisterText}>
-                        Retour à l'inscription
+                        {t('register.backToRegister')}
                       </ThemedText>
                     </TouchableOpacity>
                   )}
@@ -448,7 +464,7 @@ export default function RegisterPage() {
                     style={styles.backButton}
                   >
                     <ThemedText style={styles.backButtonText}>
-                      ← Retour au formulaire
+                      {t('register.backToForm')}
                     </ThemedText>
                   </TouchableOpacity>
                 </LinearGradient>
@@ -511,8 +527,8 @@ export default function RegisterPage() {
                     color={registerAs === 'workshop' ? '#ffffff' : '#6b7280'}
                   />
                 </LinearGradient>
-                <ThemedText style={styles.typeTitle}>Atelier</ThemedText>
-                <ThemedText style={styles.typeSubtitle}>Partenaire / inspection</ThemedText>
+                <ThemedText style={styles.typeTitle}>{t('register.workshop')}</ThemedText>
+                <ThemedText style={styles.typeSubtitle}>{t('register.workshopSubtitle')}</ThemedText>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -537,8 +553,8 @@ export default function RegisterPage() {
                     color={registerAs === 'client' ? '#ffffff' : '#6b7280'}
                   />
                 </LinearGradient>
-                <ThemedText style={styles.typeTitle}>Client</ThemedText>
-                <ThemedText style={styles.typeSubtitle}>Acheteur / vendeur</ThemedText>
+                <ThemedText style={styles.typeTitle}>{t('register.client')}</ThemedText>
+                <ThemedText style={styles.typeSubtitle}>{t('register.clientSubtitle')}</ThemedText>
               </TouchableOpacity>
             </Animated.View>
 
@@ -578,20 +594,20 @@ export default function RegisterPage() {
                     <View style={styles.form}>
                       <View style={styles.row}>
                         <View style={[styles.inputContainer, styles.halfInput]}>
-                          <ThemedText style={styles.label}>Prénom</ThemedText>
+                          <ThemedText style={styles.label}>{t('register.firstName')}</ThemedText>
                           <TextInput
                             style={styles.input}
-                            placeholder="Prénom"
+                            placeholder={t('register.firstName')}
                             placeholderTextColor="#9ca3af"
                             value={userData.firstName}
                             onChangeText={(text) => handleUserChange('firstName', text)}
                           />
                         </View>
                         <View style={[styles.inputContainer, styles.halfInput]}>
-                          <ThemedText style={styles.label}>Nom</ThemedText>
+                          <ThemedText style={styles.label}>{t('register.lastName')}</ThemedText>
                           <TextInput
                             style={styles.input}
-                            placeholder="Nom"
+                            placeholder={t('register.lastName')}
                             placeholderTextColor="#9ca3af"
                             value={userData.lastName}
                             onChangeText={(text) => handleUserChange('lastName', text)}
@@ -600,10 +616,10 @@ export default function RegisterPage() {
                       </View>
 
                       <View style={styles.inputContainer}>
-                        <ThemedText style={styles.label}>Email *</ThemedText>
+                        <ThemedText style={styles.label}>{t('register.emailRequired')}</ThemedText>
                         <TextInput
                           style={styles.input}
-                          placeholder="votre@email.com"
+                          placeholder={t('register.emailPlaceholder')}
                           placeholderTextColor="#9ca3af"
                           value={userData.email}
                           onChangeText={(text) => handleUserChange('email', text)}
@@ -613,10 +629,10 @@ export default function RegisterPage() {
                       </View>
 
                       <View style={styles.inputContainer}>
-                        <ThemedText style={styles.label}>Téléphone</ThemedText>
+                        <ThemedText style={styles.label}>{t('register.phone')}</ThemedText>
                         <TextInput
                           style={styles.input}
-                          placeholder="+213 XXX XX XX XX"
+                          placeholder={t('register.phonePlaceholder')}
                           placeholderTextColor="#9ca3af"
                           value={userData.phone}
                           onChangeText={(text) => handleUserChange('phone', text)}
@@ -625,7 +641,7 @@ export default function RegisterPage() {
                       </View>
 
                       <View style={styles.inputContainer}>
-                        <ThemedText style={styles.label}>Mot de passe</ThemedText>
+                        <ThemedText style={styles.label}>{t('register.passwordLabel')}</ThemedText>
                         <View style={styles.passwordWrapper}>
                           <TextInput
                             style={styles.passwordInput}
@@ -650,7 +666,7 @@ export default function RegisterPage() {
                       </View>
 
                       <View style={styles.inputContainer}>
-                        <ThemedText style={styles.label}>Confirmer le mot de passe</ThemedText>
+                        <ThemedText style={styles.label}>{t('register.confirmPasswordLabel')}</ThemedText>
                         <View style={styles.passwordWrapper}>
                           <TextInput
                             style={styles.passwordInput}
@@ -677,10 +693,10 @@ export default function RegisterPage() {
                   ) : (
                     <View style={[styles.form, styles.formWithPadding]}>
                       <View style={styles.inputContainer}>
-                        <ThemedText style={styles.label}>Nom de l'atelier</ThemedText>
+                        <ThemedText style={styles.label}>{t('register.workshopName')}</ThemedText>
                         <TextInput
                           style={styles.input}
-                          placeholder="Nom de l'atelier"
+                          placeholder={t('register.workshopNamePlaceholder')}
                           placeholderTextColor="#9ca3af"
                           value={workshopData.name}
                           onChangeText={(text) => handleWorkshopChange('name', text)}
@@ -688,20 +704,20 @@ export default function RegisterPage() {
                       </View>
 
                       <View style={styles.inputContainer}>
-                        <ThemedText style={styles.label}>Type d'atelier *</ThemedText>
+                        <ThemedText style={styles.label}>{t('register.workshopType')}</ThemedText>
                         <View style={styles.selectContainer}>
                           <ThemedText style={styles.selectText}>
-                            {workshopData.type || 'Sélectionner un type'}
+                            {workshopData.type || t('register.selectType')}
                           </ThemedText>
                         </View>
                         {/* TODO: Add Picker component for type selection */}
                       </View>
 
                       <View style={styles.inputContainer}>
-                        <ThemedText style={styles.label}>Email *</ThemedText>
+                        <ThemedText style={styles.label}>{t('register.emailRequired')}</ThemedText>
                         <TextInput
                           style={styles.input}
-                          placeholder="atelier@email.com"
+                          placeholder={t('register.workshopEmailPlaceholder')}
                           placeholderTextColor="#9ca3af"
                           value={workshopData.email}
                           onChangeText={(text) => handleWorkshopChange('email', text)}
@@ -711,10 +727,10 @@ export default function RegisterPage() {
                       </View>
 
                       <View style={styles.inputContainer}>
-                        <ThemedText style={styles.label}>Adresse</ThemedText>
+                        <ThemedText style={styles.label}>{t('register.address')}</ThemedText>
                         <TextInput
                           style={styles.input}
-                          placeholder="Adresse"
+                          placeholder={t('register.addressPlaceholder')}
                           placeholderTextColor="#9ca3af"
                           value={workshopData.adr}
                           onChangeText={(text) => handleWorkshopChange('adr', text)}
@@ -722,10 +738,10 @@ export default function RegisterPage() {
                       </View>
 
                       <View style={styles.inputContainer}>
-                        <ThemedText style={styles.label}>Téléphone</ThemedText>
+                        <ThemedText style={styles.label}>{t('register.phone')}</ThemedText>
                         <TextInput
                           style={styles.input}
-                          placeholder="+213 XXX XX XX XX"
+                          placeholder={t('register.phonePlaceholder')}
                           placeholderTextColor="#9ca3af"
                           value={workshopData.phone}
                           onChangeText={(text) => handleWorkshopChange('phone', text)}
@@ -734,7 +750,7 @@ export default function RegisterPage() {
                       </View>
 
                       <View style={styles.inputContainer}>
-                        <ThemedText style={styles.label}>Mot de passe</ThemedText>
+                        <ThemedText style={styles.label}>{t('register.passwordLabel')}</ThemedText>
                         <View style={styles.passwordWrapper}>
                           <TextInput
                             style={styles.passwordInput}
@@ -759,7 +775,7 @@ export default function RegisterPage() {
                       </View>
 
                       <View style={styles.inputContainer}>
-                        <ThemedText style={styles.label}>Confirmer le mot de passe</ThemedText>
+                        <ThemedText style={styles.label}>{t('register.confirmPasswordLabel')}</ThemedText>
                         <View style={styles.passwordWrapper}>
                           <TextInput
                             style={styles.passwordInput}
@@ -799,7 +815,7 @@ export default function RegisterPage() {
                         <ActivityIndicator color="#ffffff" />
                       ) : (
                         <ThemedText style={styles.submitButtonText}>
-                          Créer un compte
+                          {t('register.createAccount')}
                         </ThemedText>
                       )}
                     </LinearGradient>
@@ -807,10 +823,10 @@ export default function RegisterPage() {
 
                   <View style={styles.loginLink}>
                     <ThemedText style={styles.loginText}>
-                      Vous avez déjà un compte?{' '}
+                      {t('register.alreadyHaveAccount')}{' '}
                     </ThemedText>
                     <TouchableOpacity onPress={() => router.push('/login')}>
-                      <ThemedText style={styles.loginLinkText}>Se connecter</ThemedText>
+                      <ThemedText style={styles.loginLinkText}>{t('register.signIn')}</ThemedText>
                     </TouchableOpacity>
                   </View>
                 </LinearGradient>
@@ -823,7 +839,7 @@ export default function RegisterPage() {
               style={styles.backButton}
             >
               <IconSymbol name="chevron.left" size={16} color="#6b7280" />
-              <ThemedText style={styles.backButtonText}>Retour</ThemedText>
+              <ThemedText style={styles.backButtonText}>{t('register.back')}</ThemedText>
             </TouchableOpacity>
           </View>
         </ScrollView>
@@ -841,11 +857,10 @@ export default function RegisterPage() {
                 <IconSymbol name="checkmark.circle.fill" size={48} color="#10b981" />
               </View>
               <ThemedText style={styles.modalTitle}>
-                Compte créé avec succès !
+                {t('register.successTitle')}
               </ThemedText>
               <ThemedText style={styles.modalText}>
-                Votre compte a été créé et votre email est vérifié.
-                Vous devez attendre que l'admin active votre compte.
+                {t('register.successVerifiedBody')}
               </ThemedText>
               <TouchableOpacity
                 onPress={() => {
@@ -859,7 +874,7 @@ export default function RegisterPage() {
                   style={styles.modalButtonGradient}
                 >
                   <ThemedText style={styles.modalButtonText}>
-                    Aller à la page de connexion
+                    {t('register.goToLogin')}
                   </ThemedText>
                 </LinearGradient>
               </TouchableOpacity>

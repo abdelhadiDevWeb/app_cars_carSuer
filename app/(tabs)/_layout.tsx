@@ -1,6 +1,6 @@
-import { Tabs } from 'expo-router';
+import { Tabs, useSegments } from 'expo-router';
 import React, { useState, useEffect } from 'react';
-import { Platform, StyleSheet, View, Text, DeviceEventEmitter } from 'react-native';
+import { Platform, StyleSheet, View, Text, DeviceEventEmitter, AppState, Dimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, { useAnimatedStyle, withSpring } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -10,9 +10,11 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { Colors } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { useAuth } from '@/contexts/AuthContext';
+import { useChat } from '@/contexts/ChatContext';
 import { useNotifications } from '@/hooks/useNotifications';
 import { apiRequest } from '@/utils/backend';
 import { scale } from '@/utils/responsive';
+import { useTranslation } from 'react-i18next';
 
 // Custom animated tab icon component
 function AnimatedTabIcon({ 
@@ -79,57 +81,93 @@ export default function TabLayout() {
   const colorScheme = useColorScheme();
   const insets = useSafeAreaInsets();
   const { isAuthenticated, isLoading } = useAuth();
+  const { isViewingChat } = useChat();
   const { notifications } = useNotifications();
-  const [chats, setChats] = useState<any[]>([]);
+  const { t } = useTranslation();
+  const segments = useSegments();
+  const isOnChatTab = (segments as unknown as string[]).includes('chat');
+  // No chats state; badge is driven by notifications from socket
+  const screenWidth = Dimensions.get('window').width;
+  const targetWidth = Math.round(screenWidth * 0.95);
+  const horizontalMargin = Math.max((screenWidth - targetWidth) / 2, 0);
+  const [showTabToast, setShowTabToast] = useState(false);
+  const [tabToastText, setTabToastText] = useState<string>('');
+  const lastNotifCountRef = React.useRef<number>(0);
+  const lastUnreadChatsRef = React.useRef<number>(0);
+  const suppressChatBadgeRef = React.useRef<boolean>(false);
+  const prevIsOnChatTabRef = React.useRef<boolean>(isOnChatTab);
   
-  // Fetch chats to get unread message count
-  useEffect(() => {
-    if (isAuthenticated && !isLoading) {
-      const fetchChats = async () => {
-        try {
-          const response = await apiRequest('/chat/my-chats');
-          if (response.ok) {
-            const data = await response.json();
-            if (data.ok && data.chats) {
-              setChats(data.chats);
-            }
-          }
-        } catch (error) {
-          console.error('Error fetching chats for badge:', error);
-        }
-      };
-      fetchChats();
-      
-      // Listen for custom event to refresh chats immediately (from NotificationBanner or chat page)
-      const subscription = DeviceEventEmitter.addListener('refreshChats', (updatedChats?: any[]) => {
-        if (updatedChats && Array.isArray(updatedChats)) {
-          // If chats data is provided, update immediately (real-time)
-          setChats(updatedChats);
-        } else {
-          // Otherwise, fetch from API
-          fetchChats();
-        }
-      });
-      
-      // Refresh chats periodically to update badge
-      const interval = setInterval(fetchChats, 5000);
-      
-      return () => {
-        clearInterval(interval);
-        subscription.remove();
-      };
-    }
-  }, [isAuthenticated, isLoading]);
-  
-  // Count chats with unread messages (show 1 per chat, not total count)
-  const unreadMessagesCount = chats.filter((chat) => (chat.unreadCount || 0) > 0).length;
+  // Unread chat messages count from socket-driven notifications (no polling)
+  const unreadMessagesCount = notifications.filter((n: any) => !n.is_read && n.type === 'message').length;
+  const effectiveUnreadMessagesCount = suppressChatBadgeRef.current ? 0 : unreadMessagesCount;
 
   // Don't render tabs until auth state is loaded
   if (isLoading) {
     return null;
   }
 
+  // Show a brief toast above the navigator when a new notification or message arrives
+  useEffect(() => {
+    const currentNonMsg = notifications.filter((n: any) => !n.is_read && n.type !== 'message').length;
+    if (currentNonMsg > (lastNotifCountRef.current || 0)) {
+      setTabToastText(t('notifications.title'));
+      setShowTabToast(true);
+      const id = setTimeout(() => setShowTabToast(false), 2500);
+      lastNotifCountRef.current = currentNonMsg;
+      return () => clearTimeout(id);
+    }
+    lastNotifCountRef.current = currentNonMsg;
+  }, [notifications, t]);
+
+  useEffect(() => {
+    if (effectiveUnreadMessagesCount > (lastUnreadChatsRef.current || 0)) {
+      setTabToastText(t('notifications.newMessages') || t('notifications.newMessage') || 'New message');
+      setShowTabToast(true);
+      const id = setTimeout(() => setShowTabToast(false), 2500);
+      lastUnreadChatsRef.current = effectiveUnreadMessagesCount;
+      return () => clearTimeout(id);
+    }
+    lastUnreadChatsRef.current = effectiveUnreadMessagesCount;
+  }, [effectiveUnreadMessagesCount, t]);
+
+  // Suppress badge while user is on Chat tab or opens a conversation; resume after leaving
+  useEffect(() => {
+    // When chat tab is opened, hide badge immediately
+    if (isOnChatTab || isViewingChat) {
+      suppressChatBadgeRef.current = true;
+    } else if (prevIsOnChatTabRef.current && !isOnChatTab) {
+      // Left chat tab: allow badge again (it will reflect latest notifications)
+      suppressChatBadgeRef.current = false;
+    }
+    prevIsOnChatTabRef.current = isOnChatTab;
+  }, [isOnChatTab, isViewingChat]);
+
+  // Also react to explicit events from chat screen
+  useEffect(() => {
+    const subOpened = DeviceEventEmitter.addListener('chatOpened', () => {
+      suppressChatBadgeRef.current = true;
+    });
+    const subAllRead = DeviceEventEmitter.addListener('chatAllRead', () => {
+      suppressChatBadgeRef.current = true;
+    });
+    return () => {
+      subOpened.remove();
+      subAllRead.remove();
+    };
+  }, []);
+
+  // Broadcast foreground event so screens can refresh data
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') {
+        DeviceEventEmitter.emit('appForeground');
+      }
+    });
+    return () => sub.remove();
+  }, []);
+
   return (
+    <>
     <Tabs
       screenOptions={{
         tabBarActiveTintColor: '#0d9488',
@@ -137,30 +175,32 @@ export default function TabLayout() {
         headerShown: false,
         tabBarButton: HapticTab,
         tabBarStyle: {
-          backgroundColor: 'rgba(255, 255, 255, 0.98)',
+          ...(isViewingChat ? { display: 'none' } : {}),
+          backgroundColor: '#ffffff',
           borderTopWidth: 0,
-          // Fixed height to ensure consistency across all pages
-          height: Platform.OS === 'ios' 
-            ? Math.max(60 + insets.bottom, 70) // Minimum 70px on iOS
-            : 70, // Fixed 70px on Android
-          paddingBottom: Platform.OS === 'ios' ? Math.max(insets.bottom, 10) : 12,
+          height: Platform.OS === 'ios' ? 72 : 68,
+          paddingBottom: Platform.OS === 'ios' ? 10 : 8,
           paddingTop: 8,
-          paddingHorizontal: 12,
+            paddingLeft: scale(14),
+            paddingRight: scale(22),
+            // Centered pill inside a full-width area
           position: 'absolute',
-          bottom: 0,
-          left: 0,
-          right: 0,
-          // Ensure consistent styling
-          elevation: Platform.OS === 'android' ? 20 : 0,
+          bottom: Platform.OS === 'ios'
+              ? Math.max(insets.bottom + scale(16), scale(22))
+              : Math.max(insets.bottom + scale(12), scale(18)),
+            // Add outer space from the left and right edges
+            left: Math.max(insets.left + scale(16), scale(16)),
+            right: Math.max(insets.right + scale(16), scale(16)),
+          borderRadius: 28,
           ...Platform.select({
             ios: {
               shadowColor: '#000',
-              shadowOffset: { width: 0, height: -6 },
-              shadowOpacity: 0.12,
-              shadowRadius: 16,
+              shadowOffset: { width: 0, height: 8 },
+              shadowOpacity: 0.14,
+              shadowRadius: 18,
             },
             android: {
-              elevation: 20,
+              elevation: 18,
             },
           }),
         },
@@ -181,7 +221,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          title: 'Accueil',
+            title: t('tabs.home'),
           tabBarIcon: ({ focused }) => (
             <AnimatedTabIcon
               focused={focused}
@@ -196,7 +236,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="faq"
         options={{
-          title: 'FAQ',
+            title: t('tabs.faq'),
           href: !isAuthenticated ? undefined : null, // Hide when authenticated
           tabBarIcon: ({ focused }) => (
             <AnimatedTabIcon
@@ -212,7 +252,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="cars"
         options={{
-          title: 'Voitures',
+            title: t('tabs.cars'),
           href: isAuthenticated ? undefined : null, // Hide when NOT authenticated
           tabBarIcon: ({ focused }) => (
             <AnimatedTabIcon
@@ -228,7 +268,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="workshop-certified"
         options={{
-          title: 'Ateliers',
+            title: t('tabs.workshops'),
           tabBarIcon: ({ focused }) => (
             <AnimatedTabIcon
               focused={focused}
@@ -243,7 +283,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="scan"
         options={{
-          title: 'Scanner',
+            title: t('tabs.scan'),
           tabBarIcon: ({ focused }) => (
             <AnimatedTabIcon
               focused={focused}
@@ -258,7 +298,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="chat"
         options={{
-          title: 'Messages',
+            title: t('tabs.messages'),
           href: isAuthenticated ? undefined : null, // Hide when NOT authenticated
           tabBarIcon: ({ focused }) => (
             <View style={{ position: 'relative' }}>
@@ -267,10 +307,10 @@ export default function TabLayout() {
                 iconName="message"
                 activeIconName="message.fill"
               />
-              {unreadMessagesCount > 0 && (
+              {effectiveUnreadMessagesCount > 0 && (
                 <View style={styles.tabBadge}>
                   <Text style={styles.tabBadgeText}>
-                    {unreadMessagesCount > 9 ? '9+' : unreadMessagesCount}
+                    {effectiveUnreadMessagesCount > 9 ? '9+' : effectiveUnreadMessagesCount}
                   </Text>
                 </View>
               )}
@@ -283,7 +323,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="profile"
         options={{
-          title: 'Profil',
+            title: t('tabs.profile'),
           href: isAuthenticated ? undefined : null, // Hide when NOT authenticated
           tabBarIcon: ({ focused }) => (
             <AnimatedTabIcon
@@ -303,6 +343,34 @@ export default function TabLayout() {
         }}
       />
     </Tabs>
+      {showTabToast && (
+      <View
+        style={{
+          position: 'absolute',
+          bottom:
+            (Platform.OS === 'ios'
+              ? Math.max(insets.bottom + scale(16), scale(22))
+              : Math.max(insets.bottom + scale(12), scale(18))) + (Platform.OS === 'ios' ? 80 : 72),
+          left: Math.max(insets.left + scale(24), scale(24)),
+          right: Math.max(insets.right + scale(24), scale(24)),
+          alignItems: 'center',
+        }}
+        pointerEvents="none"
+      >
+        <View
+          style={{
+            backgroundColor: '#0f172a',
+            paddingVertical: 8,
+            paddingHorizontal: 14,
+            borderRadius: 999,
+            opacity: 0.92,
+          }}
+        >
+          <Text style={{ color: '#ffffff', fontWeight: '800' }}>{tabToastText}</Text>
+        </View>
+      </View>
+      )}
+    </>
   );
 }
 

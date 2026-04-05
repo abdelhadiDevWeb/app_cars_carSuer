@@ -9,6 +9,7 @@ import {
   Platform,
   ActivityIndicator,
   Alert,
+  Linking,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -20,23 +21,27 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { apiRequest } from '@/utils/backend';
 import { useAuth } from '@/contexts/AuthContext';
 import { SCREEN_WIDTH, getPadding, getFontSizes, scale } from '@/utils/responsive';
+import { useTranslation } from 'react-i18next';
 
 const padding = getPadding();
 const fontSizes = getFontSizes();
 
 export default function LoginPage() {
   const router = useRouter();
-  const { login } = useAuth();
+  const { login, logout } = useAuth();
+  const { t, i18n } = useTranslation();
+  const SUPPORT_PHONE = '0562232628';
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [showActivationModal, setShowActivationModal] = useState(false);
+  const [showExpiredModal, setShowExpiredModal] = useState(false);
 
   const handleSubmit = async () => {
     if (!email.trim() || !password.trim()) {
-      setError('Veuillez remplir tous les champs');
+      setError(t('auth.requiredFields'));
       return;
     }
 
@@ -55,7 +60,7 @@ export default function LoginPage() {
       } catch (jsonError) {
         // If response is not JSON, it's likely a network/server error
         console.error('Failed to parse JSON response:', jsonError);
-        setError(`Erreur serveur (${response.status}). Vérifiez que le backend est démarré.`);
+        setError(t('login.serverError', { status: response.status }));
         setIsLoading(false);
         return;
       }
@@ -67,7 +72,7 @@ export default function LoginPage() {
           setIsLoading(false);
           return;
         }
-        setError(data?.message || 'Erreur lors de la connexion');
+        setError(data?.message || t('login.loginError'));
         setIsLoading(false);
         return;
       }
@@ -82,17 +87,51 @@ export default function LoginPage() {
           type: data.type,
           role: data.role,
         });
-        
-        // Redirect based on user type
-        // Note: Dashboard routes for workshop and admin are not implemented in mobile app
-        // All users are redirected to the main tabs
+
+        // After login, verify subscription before navigating
+        try {
+          const res = await apiRequest('/abonnement/my-subscription');
+          const subData = await res.json().catch(() => null);
+          const now = Date.now();
+          const isExpired =
+            !res.ok ||
+            !subData?.ok ||
+            !subData?.hasSubscription ||
+            !subData?.subscription?.date_end ||
+            new Date(subData.subscription.date_end).getTime() < now;
+
+          if (isExpired) {
+            setShowExpiredModal(true);
+            // Best-effort server-side deactivation (ignore failures)
+            try {
+              await apiRequest('/auth/profile', {
+                method: 'PUT',
+                body: JSON.stringify({ status: false }),
+              });
+            } catch {}
+            try {
+              await apiRequest('/abonnement/deactivate', { method: 'POST' });
+            } catch {}
+            // Do NOT change page or logout until user clicks OK in the modal
+            setIsLoading(false);
+            return;
+          }
+        } catch {
+          // If subscription check fails, allow navigation but you may choose to block instead
+        }
+
+        // Navigate to app tabs if subscription is valid
         router.replace('/(tabs)');
       }
     } catch (error: any) {
       console.error('Login Error:', error);
-      const errorMessage = error?.message || 'Erreur de connexion';
+      const errorMessage = error?.message || t('login.connectionError');
       if (errorMessage.includes('fetch') || errorMessage.includes('network') || errorMessage.includes('Failed to connect') || errorMessage.includes('Impossible de se connecter')) {
-        setError('Impossible de se connecter au serveur. Vérifiez votre connexion internet et que le backend est démarré sur ' + (process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:8001'));
+        setError(
+          t('login.cannotConnect', {
+            url: process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:8001',
+          })
+        );
       } else {
         setError(errorMessage);
       }
@@ -144,14 +183,14 @@ export default function LoginPage() {
                 <View style={styles.form}>
                   {/* Email Input */}
                   <View style={styles.inputContainer}>
-                    <ThemedText style={styles.label}>Email</ThemedText>
+                    <ThemedText style={styles.label}>{t('auth.email')}</ThemedText>
                     <View style={styles.inputWrapper}>
                       <View style={styles.inputIconContainer}>
                         <IconSymbol name="message.fill" size={18} color="#0d9488" />
                       </View>
                       <TextInput
                         style={styles.input}
-                        placeholder="votre@email.com"
+                        placeholder="email@example.com"
                         placeholderTextColor="#9ca3af"
                         value={email}
                         onChangeText={(text) => {
@@ -167,7 +206,7 @@ export default function LoginPage() {
 
                   {/* Password Input */}
                   <View style={styles.inputContainer}>
-                    <ThemedText style={styles.label}>Mot de passe</ThemedText>
+                    <ThemedText style={styles.label}>{t('auth.password')}</ThemedText>
                     <View style={styles.inputWrapper}>
                       <View style={styles.inputIconContainer}>
                         <IconSymbol name="shield.fill" size={18} color="#0d9488" />
@@ -211,7 +250,7 @@ export default function LoginPage() {
                     <TouchableOpacity style={styles.rememberMe}>
                       <View style={styles.checkbox} />
                       <ThemedText style={styles.rememberMeText}>
-                        Se souvenir de moi
+                        {t('login.rememberMe')}
                       </ThemedText>
                     </TouchableOpacity>
                   </View>
@@ -220,7 +259,7 @@ export default function LoginPage() {
                   <View style={styles.forgotPasswordContainer}>
                     <TouchableOpacity>
                       <ThemedText style={styles.forgotPasswordText}>
-                        Mot de passe oublié?
+                        {t('login.forgotPassword')}
                       </ThemedText>
                     </TouchableOpacity>
                   </View>
@@ -242,7 +281,7 @@ export default function LoginPage() {
                         <ActivityIndicator color="#ffffff" />
                       ) : (
                         <ThemedText style={styles.submitButtonText}>
-                          Se Connecter
+                          {t('auth.login')}
                         </ThemedText>
                       )}
                     </LinearGradient>
@@ -251,11 +290,11 @@ export default function LoginPage() {
                   {/* Register Link */}
                   <View style={styles.registerLink}>
                     <ThemedText style={styles.registerText}>
-                      Vous n'avez pas de compte?{' '}
+                      {t('login.noAccount')}{' '}
                     </ThemedText>
                     <TouchableOpacity onPress={() => router.push('/register')}>
                       <ThemedText style={styles.registerLinkText}>
-                        Créer un compte
+                        {t('auth.register')}
                       </ThemedText>
                     </TouchableOpacity>
                   </View>
@@ -269,7 +308,7 @@ export default function LoginPage() {
               style={styles.backButton}
             >
               <IconSymbol name="chevron.left" size={16} color="#6b7280" />
-              <ThemedText style={styles.backButtonText}>Retour</ThemedText>
+              <ThemedText style={styles.backButtonText}>{t('login.back')}</ThemedText>
             </TouchableOpacity>
           </View>
         </ScrollView>
@@ -287,11 +326,10 @@ export default function LoginPage() {
                 <IconSymbol name="checkmark.circle.fill" size={48} color="#f59e0b" />
               </View>
               <ThemedText style={styles.modalTitle}>
-                Compte en attente d'activation
+                {t('login.activationTitle')}
               </ThemedText>
               <ThemedText style={styles.modalText}>
-                Votre compte n'est pas encore activé par l'administrateur.
-                Veuillez patienter jusqu'à ce que votre compte soit activé.
+                {t('login.activationBody')}
               </ThemedText>
               <TouchableOpacity
                 onPress={() => setShowActivationModal(false)}
@@ -301,9 +339,68 @@ export default function LoginPage() {
                   colors={['#0d9488', '#14b8a6']}
                   style={styles.modalButtonGradient}
                 >
-                  <ThemedText style={styles.modalButtonText}>Compris</ThemedText>
+                  <ThemedText style={styles.modalButtonText}>{t('login.activationOk')}</ThemedText>
                 </LinearGradient>
               </TouchableOpacity>
+            </LinearGradient>
+          </View>
+        </View>
+      )}
+
+      {/* Subscription Expired Modal */}
+      {showExpiredModal && (
+        <View style={styles.modalOverlay}>
+          <View key={i18n.language} style={styles.modalContent}>
+            <LinearGradient
+              colors={['rgba(255, 255, 255, 0.98)', 'rgba(255, 255, 255, 0.95)']}
+              style={styles.modalBlur}
+            >
+              <View style={styles.modalIconContainer}>
+                <IconSymbol name="exclamationmark.triangle.fill" size={48} color="#f59e0b" />
+              </View>
+              <ThemedText style={styles.modalTitle}>
+                {t('subscription.expiredTitle')}
+              </ThemedText>
+              <ThemedText style={styles.modalText}>
+                {t('subscription.expiredContactBody')}
+              </ThemedText>
+              <View style={{ width: '100%', gap: 10 }}>
+                <TouchableOpacity
+                  onPress={async () => {
+                    try {
+                      await Linking.openURL(`tel:${SUPPORT_PHONE}`);
+                    } catch {}
+                  }}
+                  style={styles.modalButton}
+                >
+                  <LinearGradient
+                    colors={['#0d9488', '#14b8a6']}
+                    style={styles.modalButtonGradient}
+                  >
+                    <ThemedText style={styles.modalButtonText}>
+                      {t('subscription.callSupport')} • {SUPPORT_PHONE}
+                    </ThemedText>
+                  </LinearGradient>
+                </TouchableOpacity>
+              <TouchableOpacity
+                onPress={async () => {
+                  try {
+                    await logout();
+                  } finally {
+                    setShowExpiredModal(false);
+                    // Stay on login screen (no navigation) until user proceeds manually.
+                  }
+                }}
+                style={styles.modalButton}
+              >
+                <LinearGradient
+                  colors={['#64748b', '#475569']}
+                  style={styles.modalButtonGradient}
+                >
+                  <ThemedText style={styles.modalButtonText}>{t('common.ok')}</ThemedText>
+                </LinearGradient>
+              </TouchableOpacity>
+              </View>
             </LinearGradient>
           </View>
         </View>
@@ -574,21 +671,21 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   modalOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
+    ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0, 0, 0, 0.5)',
     justifyContent: 'center',
     alignItems: 'center',
     padding: 24,
+    zIndex: 9999,
+    elevation: 9999,
   },
   modalContent: {
     width: '100%',
     maxWidth: 400,
     borderRadius: 24,
     overflow: 'hidden',
+    zIndex: 10000,
+    elevation: 10000,
   },
   modalBlur: {
     padding: 32,

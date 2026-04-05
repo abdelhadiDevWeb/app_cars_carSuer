@@ -22,6 +22,7 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAuth } from '@/contexts/AuthContext';
 import { useChat } from '@/contexts/ChatContext';
 import { useNotifications } from '@/hooks/useNotifications';
+import { useTranslation } from 'react-i18next';
 import { apiRequest, getImageUrl, getBackendUrl } from '@/utils/backend';
 import { getPadding, getFontSizes, scale } from '@/utils/responsive';
 import { io, Socket } from 'socket.io-client';
@@ -75,6 +76,7 @@ interface Message {
 }
 
 export default function ChatScreen() {
+  const { t } = useTranslation();
   const { isAuthenticated, user } = useAuth();
   const { setIsViewingChat } = useChat();
   const { fetchNotifications, markChatMessagesAsRead, markMessageNotificationsAsReadForUser } = useNotifications();
@@ -372,9 +374,19 @@ export default function ChatScreen() {
       fetchChats();
       
       // Listen for refresh event from NotificationBanner to update badge in real-time
-      const subscription = DeviceEventEmitter.addListener('refreshChats', () => {
-        fetchChats();
-      });
+      const subscription = DeviceEventEmitter.addListener(
+        'refreshChats',
+        (updatedChats?: any[]) => {
+          // If chats are provided, update local state without hitting the backend again.
+          if (updatedChats && Array.isArray(updatedChats)) {
+            setChats(updatedChats as any);
+            chatsRef.current = updatedChats as any;
+            return;
+          }
+          // Fallback: refresh from backend only when payload is missing.
+          fetchChats();
+        }
+      );
       
       return () => {
         subscription.remove();
@@ -388,7 +400,22 @@ export default function ChatScreen() {
   // Update chat context when viewing a chat
   useEffect(() => {
     setIsViewingChat(!!selectedChatId);
-  }, [selectedChatId, setIsViewingChat]);
+
+    const activeOtherUserId =
+      selectedChatId && currentChat?.otherUser?.id ? currentChat.otherUser.id : null;
+    DeviceEventEmitter.emit('activeChatChanged', {
+      isViewingChat: !!selectedChatId,
+      otherUserId: activeOtherUserId,
+    });
+
+    return () => {
+      setIsViewingChat(false);
+      DeviceEventEmitter.emit('activeChatChanged', {
+        isViewingChat: false,
+        otherUserId: null,
+      });
+    };
+  }, [selectedChatId, currentChat, setIsViewingChat]);
 
   // Check if userId param is provided to open a specific chat
   useEffect(() => {
@@ -679,7 +706,7 @@ export default function ChatScreen() {
             style={styles.headerGradient}
           >
             <View style={styles.headerTitleContainer}>
-              <ThemedText style={styles.headerTitle}>Messages</ThemedText>
+              <ThemedText style={styles.headerTitle}>{t('tabs.messages')}</ThemedText>
               {(() => {
                 // Count chats with unread messages (show 1 per chat, not total count)
                 const chatsWithUnread = chats.filter((chat) => (chat.unreadCount || 0) > 0).length;
@@ -693,7 +720,7 @@ export default function ChatScreen() {
               })()}
             </View>
             <ThemedText style={styles.headerSubtitle}>
-              {chats.length} conversation{chats.length > 1 ? 's' : ''}
+              {t('chat.conversationsCount', { count: chats.length })}
             </ThemedText>
           </LinearGradient>
         </Animated.View>
@@ -702,20 +729,27 @@ export default function ChatScreen() {
         {loading ? (
           <View style={styles.loadingContainer}>
             <ActivityIndicator size="large" color="#0d9488" />
-            <ThemedText style={styles.loadingText}>Chargement...</ThemedText>
+            <ThemedText style={styles.loadingText}>{t('common.loading')}</ThemedText>
           </View>
         ) : chats.length === 0 ? (
           <View style={styles.emptyContainer}>
             <IconSymbol name="message" size={scale(64)} color="#9ca3af" />
-            <ThemedText style={styles.emptyText}>Aucune conversation</ThemedText>
+            <ThemedText style={styles.emptyText}>{t('chat.emptyTitle')}</ThemedText>
             <ThemedText style={styles.emptySubtext}>
-              Vos conversations apparaîtront ici
+              {t('chat.emptyBody')}
             </ThemedText>
           </View>
         ) : (
           <ScrollView
             style={styles.chatsList}
-            contentContainerStyle={styles.chatsListContent}
+            contentContainerStyle={[
+              styles.chatsListContent,
+              {
+                paddingBottom: Platform.OS === 'ios' 
+                  ? 90 
+                  : 80 + Math.max(insets.bottom, 0), // Account for tab bar height + Android nav bar
+              }
+            ]}
             showsVerticalScrollIndicator={false}
             refreshControl={
               <RefreshControl
@@ -819,9 +853,9 @@ export default function ChatScreen() {
           <View style={[
             styles.messagesContainer,
             {
-              bottom: Platform.OS === 'ios' 
-                ? Math.max(60 + insets.bottom, 70) // Same calculation as tab bar height
-                : 70, // Fixed 70px on Android
+              // Tab bar is hidden while viewing a conversation,
+              // so use full height and keep only safe-area bottom spacing.
+              bottom: Math.max(insets.bottom, 6),
             }
           ]}>
             <KeyboardAvoidingView
@@ -893,7 +927,7 @@ export default function ChatScreen() {
                     {messages.length === 0 ? (
                       <View style={styles.emptyMessages}>
                         <ThemedText style={styles.emptyMessagesText}>
-                          Aucun message. Commencez la conversation !
+                          {t('chat.emptyMessages')}
                         </ThemedText>
                       </View>
                     ) : (
@@ -1086,7 +1120,7 @@ const styles = StyleSheet.create({
   },
   chatsListContent: {
     padding: padding.medium,
-    paddingBottom: Platform.OS === 'ios' ? 90 : 80, // Account for tab bar height consistently
+    paddingBottom: Platform.OS === 'ios' ? 90 : 80, // Base padding, will be adjusted inline
   },
   chatItem: {
     flexDirection: 'row',

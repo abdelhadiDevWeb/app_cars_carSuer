@@ -1,23 +1,51 @@
-// ============================================
-// NOTIFICATIONS HOOK - COMMENTED FOR EXPO GO
-// When ready to enable push notifications, uncomment this code
-// ============================================
-
 import { useEffect, useRef, useState } from 'react';
-// import { Platform } from 'react-native';
-// import * as Notifications from 'expo-notifications';
+import { DeviceEventEmitter, Platform } from 'react-native';
+import * as Device from 'expo-device';
+import Constants from 'expo-constants';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { io, Socket } from 'socket.io-client';
 import { useAuth } from '@/contexts/AuthContext';
 import { apiRequest, getBackendUrl } from '@/utils/backend';
 
-// Configure notification handler
-// Notifications.setNotificationHandler({
-//   handleNotification: async () => ({
-//     shouldShowAlert: true,
-//     shouldPlaySound: true,
-//     shouldSetBadge: true,
-//   }),
-// });
+let notificationHandlerConfigured = false;
+
+const isExpoGoAndroid =
+  Platform.OS === 'android' &&
+  Constants.executionEnvironment === 'storeClient';
+
+async function getNotificationsModule() {
+  if (isExpoGoAndroid) {
+    return null;
+  }
+
+  try {
+    const Notifications = await import('expo-notifications');
+    return Notifications;
+  } catch (error) {
+    console.error('Error loading expo-notifications:', error);
+    return null;
+  }
+}
+
+async function configureNotificationHandler() {
+  if (notificationHandlerConfigured) return;
+
+  const Notifications = await getNotificationsModule();
+  if (!Notifications) return;
+
+  try {
+    Notifications.setNotificationHandler({
+      handleNotification: async () => ({
+        shouldShowAlert: true,
+        shouldPlaySound: true,
+        shouldSetBadge: true,
+      }),
+    });
+    notificationHandlerConfigured = true;
+  } catch (error) {
+    console.error('Error setting notification handler:', error);
+  }
+}
 
 export interface Notification {
   id: string;
@@ -37,13 +65,25 @@ export function useNotifications() {
   const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const socketRef = useRef<Socket | null>(null);
-  // const notificationListener = useRef<any>(null);
-  // const responseListener = useRef<any>(null);
+  const notificationListener = useRef<any>(null);
+  const responseListener = useRef<any>(null);
+  const isViewingChatRef = useRef(false);
+  const activeChatUserIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    configureNotificationHandler();
+  }, []);
 
   // Request notification permissions and register for push notifications
-  // useEffect(() => {
-  //   registerForPushNotificationsAsync();
-  // }, []);
+  useEffect(() => {
+    if (isAuthenticated && user?._id) {
+      // Wrap in try-catch to prevent app crash if notification setup fails
+      registerForPushNotificationsAsync().catch((error) => {
+        console.error('Error registering for push notifications:', error);
+        // Don't crash the app if notifications fail
+      });
+    }
+  }, [isAuthenticated, user]);
 
   // Fetch notifications from API
   const fetchNotifications = async () => {
@@ -104,6 +144,30 @@ export function useNotifications() {
         // Filter out "other" type notifications
         if (notification.type === 'other') return;
 
+        // If user is currently viewing the same chat sender, auto-mark as read and skip banner/unread increment.
+        if (notification.type === 'message') {
+          const senderId = notification.id_sender?._id || notification.id_sender?.id || notification.id_sender;
+          const senderIdStr = senderId?.toString?.() || '';
+          const activeChatUserId = activeChatUserIdRef.current || '';
+
+          if (
+            isViewingChatRef.current &&
+            senderIdStr &&
+            activeChatUserId &&
+            senderIdStr === activeChatUserId
+          ) {
+            // Optimistic local update for this sender notifications.
+            markMessageNotificationsAsReadForUser(senderIdStr);
+            // Persist read status on backend.
+            apiRequest(`/notification/read-chat-messages/${senderIdStr}`, {
+              method: 'PUT',
+            }).catch((err) => {
+              console.error('Error auto-marking chat notifications as read:', err);
+            });
+            return;
+          }
+        }
+
         // Check if notification already exists to avoid duplicates
         setNotifications((prev) => {
           const notificationId = notification._id || notification.id;
@@ -119,8 +183,13 @@ export function useNotifications() {
 
         setUnreadCount((prev) => prev + 1);
 
-        // Show push notification
-        // schedulePushNotification(notification); // COMMENTED FOR EXPO GO
+        // Show push notification (with error handling)
+        try {
+          schedulePushNotification(notification);
+        } catch (error) {
+          console.error('Error scheduling push notification:', error);
+          // Continue even if notification display fails
+        }
       }
 
       // Also refresh from API to ensure consistency
@@ -142,6 +211,23 @@ export function useNotifications() {
     };
   }, [isAuthenticated, user]);
 
+  // Track active chat (from chat screen) so same-chat notifications can be ignored/auto-read.
+  useEffect(() => {
+    const subscription = DeviceEventEmitter.addListener(
+      'activeChatChanged',
+      (payload?: { isViewingChat?: boolean; otherUserId?: string | null }) => {
+        isViewingChatRef.current = !!payload?.isViewingChat;
+        activeChatUserIdRef.current = payload?.otherUserId || null;
+      }
+    );
+
+    return () => {
+      subscription.remove();
+      isViewingChatRef.current = false;
+      activeChatUserIdRef.current = null;
+    };
+  }, []);
+
   // Fetch notifications on mount only
   useEffect(() => {
     if (isAuthenticated && user?._id) {
@@ -150,31 +236,47 @@ export function useNotifications() {
   }, [isAuthenticated, user]);
 
   // Setup notification listeners
-  // useEffect(() => {
-  //   // Listen for notifications received while app is in foreground
-  //   notificationListener.current = Notifications.addNotificationReceivedListener(notification => {
-  //     console.log('Notification received:', notification);
-  //     // Refresh notifications when a push notification is received
-  //     fetchNotifications();
-  //   });
+  useEffect(() => {
+    if (isExpoGoAndroid) {
+      return;
+    }
 
-  //   // Listen for user tapping on notification
-  //   responseListener.current = Notifications.addNotificationResponseReceivedListener(response => {
-  //     console.log('Notification tapped:', response);
-  //     const data = response.notification.request.content.data;
-  //     // Handle navigation based on notification data
-  //     // This will be handled by the component using this hook
-  //   });
+    try {
+      (async () => {
+        const Notifications = await getNotificationsModule();
+        if (!Notifications) return;
 
-  //   return () => {
-  //     if (notificationListener.current) {
-  //       Notifications.removeNotificationSubscription(notificationListener.current);
-  //     }
-  //     if (responseListener.current) {
-  //       Notifications.removeNotificationSubscription(responseListener.current);
-  //     }
-  //   };
-  // }, []);
+        // Listen for notifications received while app is in foreground
+        notificationListener.current = Notifications.addNotificationReceivedListener(notification => {
+          console.log('Notification received:', notification);
+          fetchNotifications();
+        });
+
+        // Listen for user tapping on notification
+        responseListener.current = Notifications.addNotificationResponseReceivedListener(response => {
+          console.log('Notification tapped:', response);
+          const data = response.notification.request.content.data;
+          void data;
+        });
+      })();
+    } catch (error) {
+      console.error('Error setting up notification listeners:', error);
+      // Continue without listeners if setup fails
+    }
+
+    return () => {
+      try {
+        if (notificationListener.current) {
+          notificationListener.current.remove();
+        }
+        if (responseListener.current) {
+          responseListener.current.remove();
+        }
+      } catch (error) {
+        console.error('Error removing notification listeners:', error);
+      }
+    };
+  }, []);
 
   const markAsRead = async (notificationId: string) => {
     try {
@@ -288,55 +390,138 @@ export function useNotifications() {
   };
 }
 
-// async function schedulePushNotification(notification: Notification) {
-//   await Notifications.scheduleNotificationAsync({
-//     content: {
-//       title: notification.id_sender?.name || 
-//              notification.id_sender?.firstName || 
-//              'Nouvelle notification',
-//       body: notification.message,
-//       data: {
-//         notificationId: notification.id || notification._id,
-//         type: notification.type,
-//         carId: notification.carId,
-//         senderId: notification.id_sender?._id || notification.id_sender?.id,
-//       },
-//       sound: true,
-//     },
-//     trigger: null, // Show immediately
-//   });
-// }
+async function schedulePushNotification(notification: Notification) {
+  try {
+    const Notifications = await getNotificationsModule();
+    if (!Notifications) return;
 
-// async function registerForPushNotificationsAsync() {
-//   let token;
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: notification.id_sender?.name || 
+               notification.id_sender?.firstName || 
+               'Nouvelle notification',
+        body: notification.message,
+        data: {
+          notificationId: notification.id || notification._id,
+          type: notification.type,
+          carId: notification.carId,
+          senderId: notification.id_sender?._id || notification.id_sender?.id,
+        },
+        sound: true,
+      },
+      trigger: null, // Show immediately
+    });
+  } catch (error) {
+    console.error('Error scheduling notification:', error);
+    // Don't throw - continue even if notification fails
+  }
+}
 
-//   if (Platform.OS === 'android') {
-//     await Notifications.setNotificationChannelAsync('default', {
-//       name: 'default',
-//       importance: Notifications.AndroidImportance.MAX,
-//       vibrationPattern: [0, 250, 250, 250],
-//       lightColor: '#FF231F7C',
-//     });
-//   }
+async function registerForPushNotificationsAsync() {
+  try {
+    const Notifications = await getNotificationsModule();
+    if (!Notifications) {
+      if (isExpoGoAndroid) {
+        console.log('Expo Go Android detected (SDK 53+): remote push registration skipped.');
+      }
+      return null;
+    }
 
-//   const { status: existingStatus } = await Notifications.getPermissionsAsync();
-//   let finalStatus = existingStatus;
-  
-//   if (existingStatus !== 'granted') {
-//     const { status } = await Notifications.requestPermissionsAsync();
-//     finalStatus = status;
-//   }
-  
-//   if (finalStatus !== 'granted') {
-//     console.log('Failed to get push token for push notification!');
-//     return;
-//   }
-  
-//   token = (await Notifications.getExpoPushTokenAsync()).data;
-//   console.log('Push notification token:', token);
-  
-//   // TODO: Send token to backend to store for user
-//   // This would allow backend to send push notifications even when app is closed
-  
-//   return token;
-// }
+    let token;
+
+    if (Platform.OS === 'android') {
+      try {
+        await Notifications.setNotificationChannelAsync('default', {
+          name: 'default',
+          importance: Notifications.AndroidImportance.MAX,
+          vibrationPattern: [0, 250, 250, 250],
+          lightColor: '#FF231F7C',
+          enableVibrate: true,
+          showBadge: true,
+        });
+      } catch (channelError) {
+        console.error('Error setting notification channel:', channelError);
+        // Continue even if channel setup fails
+      }
+    }
+
+    let finalStatus;
+    try {
+      const { status: existingStatus } = await Notifications.getPermissionsAsync();
+      finalStatus = existingStatus;
+      
+      if (existingStatus !== 'granted') {
+        const { status } = await Notifications.requestPermissionsAsync();
+        finalStatus = status;
+      }
+    } catch (permissionError) {
+      console.error('Error getting notification permissions:', permissionError);
+      return null; // Return early if we can't get permissions
+    }
+    
+    if (finalStatus !== 'granted') {
+      console.log('Notification permission not granted');
+      return null;
+    }
+    
+    try {
+      // Get Expo Push Token with project configuration
+      const tokenData = await Notifications.getExpoPushTokenAsync({
+        projectId: 'b95545e2-f0c9-4012-a8e3-975beeef796a', // From app.json eas.projectId
+      });
+      token = tokenData.data;
+      console.log('Push notification token:', token);
+      
+      // Send token to backend to store for user
+      // This allows backend to send push notifications even when app is closed
+      try {
+        const authToken = await AsyncStorage.getItem('auth_token');
+        if (authToken) {
+          const backendUrl = getBackendUrl();
+          const response = await fetch(`${backendUrl}/api/user/push-token`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${authToken}`,
+            },
+            body: JSON.stringify({ 
+              pushToken: token,
+              platform: Platform.OS,
+              deviceId: Device.modelName || Device.deviceName || 'unknown',
+            }),
+          });
+          
+          if (response.ok) {
+            console.log('Push token saved to backend successfully');
+          } else {
+            const errorText = await response.text();
+            console.error('Failed to save push token to backend:', errorText);
+          }
+        } else {
+          console.log('No auth token available, will retry after login');
+        }
+      } catch (saveError) {
+        console.error('Error saving push token:', saveError);
+        // Don't throw - continue even if save fails
+      }
+    } catch (tokenError: any) {
+      // Handle Firebase error gracefully on Android
+      if (tokenError?.message?.includes('FirebaseApp') || tokenError?.message?.includes('FCM')) {
+        console.warn('⚠️  Firebase not configured. Push notifications will work via Socket.IO when app is open.');
+        console.warn('   To enable push notifications when app is closed, configure Firebase:');
+        console.warn('   1. Create Firebase project');
+        console.warn('   2. Download google-services.json');
+        console.warn('   3. Place it in app_car/');
+        console.warn('   4. Rebuild APK');
+        return null;
+      }
+      console.error('Error getting push token:', tokenError);
+      return null;
+    }
+    
+    return token;
+  } catch (error) {
+    console.error('Unexpected error in registerForPushNotificationsAsync:', error);
+    return null; // Always return something to prevent crash
+  }
+}

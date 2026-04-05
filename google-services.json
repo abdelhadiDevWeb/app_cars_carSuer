@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "104489290437",
+    "project_id": "carsure-2869b",
+    "storage_bucket": "carsure-2869b.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:104489290437:android:c146b73f0dfe162abafeac",
+        "android_client_info": {
+          "package_name": "com.boojaaa.carsure"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAJFHcHVHf7jVLFsM_n8ABa0d7BchoVMGE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

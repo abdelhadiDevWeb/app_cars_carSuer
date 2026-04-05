@@ -30,13 +30,14 @@ import Animated, {
 } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
 import { StatusBar } from 'expo-status-bar';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAuth } from '@/contexts/AuthContext';
 import { apiRequest, getImageUrl } from '@/utils/backend';
 import { useNotifications } from '@/hooks/useNotifications';
+import { useTranslation } from 'react-i18next';
 // Removed BlurView import - using gradient backgrounds instead for better compatibility
 
 import {
@@ -59,9 +60,11 @@ const fontSizes = getFontSizes();
 const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpacity);
 
 export default function HomeScreen() {
+  const insets = useSafeAreaInsets();
   const router = useRouter();
   const { isAuthenticated, user, logout, token } = useAuth();
   const { notifications, unreadCount: unreadNotificationsCount, markAsRead, markAllAsRead } = useNotifications();
+  const { t } = useTranslation();
   // Exclude message notifications from header badge count (only show non-message notifications)
   const nonMessageNotificationsCount = notifications.filter((n) => !n.is_read && n.type !== 'message').length;
   const [currentCarouselIndex, setCurrentCarouselIndex] = useState(0);
@@ -388,13 +391,13 @@ export default function HomeScreen() {
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'actif':
-        return { text: 'Actif', colors: ['#10b981', '#059669'] };
+        return { text: t('home.status_active'), colors: ['#10b981', '#059669'] };
       case 'en_attente':
-        return { text: 'En attente', colors: ['#f59e0b', '#d97706'] };
+        return { text: t('home.status_pending'), colors: ['#f59e0b', '#d97706'] };
       case 'sold':
-        return { text: 'Vendu', colors: ['#6b7280', '#4b5563'] };
+        return { text: t('home.status_sold'), colors: ['#6b7280', '#4b5563'] };
       case 'no_proccess':
-        return { text: 'Non traité', colors: ['#ef4444', '#dc2626'] };
+        return { text: t('home.status_notProcessed'), colors: ['#ef4444', '#dc2626'] };
       default:
         return { text: status, colors: ['#6b7280', '#4b5563'] };
     }
@@ -432,7 +435,14 @@ export default function HomeScreen() {
       <Animated.ScrollView
         ref={mainScrollViewRef}
         style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[
+          styles.scrollContent,
+          {
+            paddingBottom: Platform.OS === 'ios' 
+              ? scale(100) 
+              : scale(100) + Math.max(insets.bottom, 0), // Account for tab bar height + Android nav bar
+          }
+        ]}
         showsVerticalScrollIndicator={false}
         onScroll={scrollHandler}
         scrollEventThrottle={16}
@@ -565,7 +575,7 @@ export default function HomeScreen() {
               >
                 <IconSymbol name="sparkles" size={18} color="#0d9488" />
                 <ThemedText style={styles.trustBadgeText}>
-                  Plateforme de confiance
+                  {t('home.trustBadge')}
                 </ThemedText>
               </LinearGradient>
             </Animated.View>
@@ -573,20 +583,18 @@ export default function HomeScreen() {
             {/* Main Headline */}
             <View>
               <ThemedText style={styles.mainHeadline}>
-                Achetez et vendez des{' '}
+                {t('home.headlinePre')}{' '}
                 <ThemedText style={styles.highlightText}>
-                  véhicules certifiés
+                  {t('home.headlineHighlight')}
           </ThemedText>{' '}
-                en toute confiance
+                {t('home.headlinePost')}
               </ThemedText>
             </View>
 
             {/* Description */}
             <View style={styles.descriptionContainer}>
               <ThemedText style={styles.description}>
-                La plateforme de référence en Algérie pour acheter et vendre des
-                véhicules d'occasion vérifiés et certifiés par des ateliers
-                agréés.
+                {t('home.description')}
               </ThemedText>
             </View>
 
@@ -599,7 +607,7 @@ export default function HomeScreen() {
                 >
                   <IconSymbol name="checkmark.circle.fill" size={18} color="#10b981" />
                   <ThemedText style={styles.trustBadgeSmallText}>
-                    Vérifiés par des experts
+                    {t('home.verifiedByExperts')}
                   </ThemedText>
                 </LinearGradient>
               </View>
@@ -610,7 +618,7 @@ export default function HomeScreen() {
                 >
                   <IconSymbol name="shield.fill" size={18} color="#3b82f6" />
                   <ThemedText style={styles.trustBadgeSmallText}>
-                    100% Sécurisé
+                    {t('home.secure')}
                   </ThemedText>
                 </LinearGradient>
               </View>
@@ -631,7 +639,7 @@ export default function HomeScreen() {
                 >
                   <IconSymbol name="magnifyingglass" size={22} color="#fff" />
                   <ThemedText style={styles.primaryButtonText}>
-                    Trouver une voiture
+                    {t('home.findCar')}
                   </ThemedText>
                   <IconSymbol name="chevron.right" size={18} color="#fff" />
                 </LinearGradient>
@@ -647,7 +655,7 @@ export default function HomeScreen() {
                   style={styles.secondaryButtonBlur}
                 >
                   <ThemedText style={styles.secondaryButtonText}>
-                    Déposer mon véhicule
+                    {t('home.sellCar')}
                   </ThemedText>
                 </LinearGradient>
               </AnimatedTouchableOpacity>
@@ -670,7 +678,7 @@ export default function HomeScreen() {
                 >
                   <IconSymbol name="checkmark.circle.fill" size={16} color="#0d9488" />
                   <ThemedText style={styles.certificationBadgeText}>
-                    Certifié
+                    {t('home.certified')}
         </ThemedText>
                 </LinearGradient>
               </Animated.View>
@@ -725,11 +733,11 @@ export default function HomeScreen() {
                           <View style={styles.carouselInfoOverlay}>
                             <ThemedText style={styles.carouselCarName}>{carName}</ThemedText>
                             <ThemedText style={styles.carouselCarPrice}>
-                              {car.price?.toLocaleString() || 0} DA
+                              {car.price?.toLocaleString() || 0} {t('home.priceCurrency')}
                             </ThemedText>
                             <View style={styles.carouselCarDetails}>
                               <ThemedText style={styles.carouselCarDetail}>
-                                {car.km?.toLocaleString() || 0} km
+                                {car.km?.toLocaleString() || 0} {t('home.mileageUnit')}
                               </ThemedText>
                               <ThemedText style={styles.carouselCarDetail}>•</ThemedText>
                               <ThemedText style={styles.carouselCarDetail}>{car.year}</ThemedText>
@@ -743,7 +751,7 @@ export default function HomeScreen() {
                   <View style={styles.carouselEmpty}>
                     <IconSymbol name="car.fill" size={64} color="#9ca3af" />
                     <ThemedText style={styles.carouselEmptyText}>
-                      Aucune voiture active
+                      {t('home.noActiveCars')}
                     </ThemedText>
                   </View>
                 )}
@@ -804,10 +812,10 @@ export default function HomeScreen() {
           >
             <View style={styles.carListingsHeader}>
               <ThemedText style={styles.carListingsTitle}>
-                Dernières Offres Certifiées
+                {t('home.latestOffersTitle')}
               </ThemedText>
               <ThemedText style={styles.carListingsSubtitle}>
-                Découvrez notre sélection de véhicules vérifiés
+                {t('home.latestOffersSubtitle')}
               </ThemedText>
             </View>
 
@@ -828,7 +836,7 @@ export default function HomeScreen() {
                   </View>
                   <TextInput
                     style={styles.modernSearchInput}
-                    placeholder="Rechercher par marque ou modèle..."
+                    placeholder={t('home.searchPlaceholder')}
                     value={searchFilters.brand || searchFilters.model || ''}
                     onChangeText={(text) => {
                       const newFilters = {
@@ -887,7 +895,7 @@ export default function HomeScreen() {
                       styles.modernFilterToggleText,
                       showFilters && styles.modernFilterToggleTextActive
                     ]}>
-                      Filtres avancés
+                      {t('home.advancedFilters')}
                     </ThemedText>
                     <IconSymbol 
                       name={showFilters ? "chevron.up" : "chevron.down"} 
@@ -911,14 +919,14 @@ export default function HomeScreen() {
                     >
                     <View style={styles.modernFilterGroup}>
                       <ThemedText style={styles.modernFilterGroupTitle}>
-                        Prix (DA)
+                        {t('home.priceLabel')}
                       </ThemedText>
                       <View style={styles.modernFilterInputRow}>
                         <View style={styles.modernFilterInputWrapper}>
                           <IconSymbol name="tag.fill" size={16} color="#6b7280" />
                           <TextInput
                             style={styles.modernFilterInput}
-                            placeholder="Min"
+                            placeholder={t('home.filters.min')}
                             value={searchFilters.minPrice}
                             onChangeText={(text) => handleFilterChange('minPrice', text)}
                             keyboardType="numeric"
@@ -929,7 +937,7 @@ export default function HomeScreen() {
                           <IconSymbol name="tag.fill" size={16} color="#6b7280" />
                           <TextInput
                             style={styles.modernFilterInput}
-                            placeholder="Max"
+                            placeholder={t('home.filters.max')}
                             value={searchFilters.maxPrice}
                             onChangeText={(text) => handleFilterChange('maxPrice', text)}
                             keyboardType="numeric"
@@ -941,14 +949,14 @@ export default function HomeScreen() {
 
                     <View style={styles.modernFilterGroup}>
                       <ThemedText style={styles.modernFilterGroupTitle}>
-                        Kilométrage (km)
+                        {t('home.filters.mileage')}
                       </ThemedText>
                       <View style={styles.modernFilterInputRow}>
                         <View style={styles.modernFilterInputWrapper}>
                           <IconSymbol name="speedometer" size={16} color="#6b7280" />
                           <TextInput
                             style={styles.modernFilterInput}
-                            placeholder="Min"
+                            placeholder={t('home.filters.min')}
                             value={searchFilters.minKm}
                             onChangeText={(text) => handleFilterChange('minKm', text)}
                             keyboardType="numeric"
@@ -959,7 +967,7 @@ export default function HomeScreen() {
                           <IconSymbol name="speedometer" size={16} color="#6b7280" />
                           <TextInput
                             style={styles.modernFilterInput}
-                            placeholder="Max"
+                            placeholder={t('home.filters.max')}
                             value={searchFilters.maxKm}
                             onChangeText={(text) => handleFilterChange('maxKm', text)}
                             keyboardType="numeric"
@@ -971,14 +979,14 @@ export default function HomeScreen() {
 
                     <View style={styles.modernFilterGroup}>
                       <ThemedText style={styles.modernFilterGroupTitle}>
-                        Année
+                        {t('home.filters.year')}
                       </ThemedText>
                       <View style={styles.modernFilterInputRow}>
                         <View style={styles.modernFilterInputWrapper}>
                           <IconSymbol name="calendar" size={16} color="#6b7280" />
                           <TextInput
                             style={styles.modernFilterInput}
-                            placeholder="Min"
+                            placeholder={t('home.filters.min')}
                             value={searchFilters.minYear}
                             onChangeText={(text) => handleFilterChange('minYear', text)}
                             keyboardType="numeric"
@@ -989,7 +997,7 @@ export default function HomeScreen() {
                           <IconSymbol name="calendar" size={16} color="#6b7280" />
                           <TextInput
                             style={styles.modernFilterInput}
-                            placeholder="Max"
+                            placeholder={t('home.filters.max')}
                             value={searchFilters.maxYear}
                             onChangeText={(text) => handleFilterChange('maxYear', text)}
                             keyboardType="numeric"
@@ -1001,14 +1009,14 @@ export default function HomeScreen() {
 
                     <View style={styles.modernFilterGroup}>
                       <ThemedText style={styles.modernFilterGroupTitle}>
-                        Caractéristiques
+                        {t('home.filters.features')}
                       </ThemedText>
                       <View style={styles.modernFilterInputRow}>
                         <View style={styles.modernFilterInputWrapper}>
                           <IconSymbol name="paintbrush.fill" size={16} color="#6b7280" />
                           <TextInput
                             style={styles.modernFilterInput}
-                            placeholder="Couleur"
+                            placeholder={t('home.filters.color')}
                             value={searchFilters.color}
                             onChangeText={(text) => handleFilterChange('color', text)}
                             placeholderTextColor="#9ca3af"
@@ -1018,7 +1026,7 @@ export default function HomeScreen() {
                           <IconSymbol name="car.side.fill" size={16} color="#6b7280" />
                           <TextInput
                             style={styles.modernFilterInput}
-                            placeholder="Portes (ex: 4)"
+                            placeholder={t('home.filters.doorsPlaceholder')}
                             value={searchFilters.ports}
                             onChangeText={(text) => handleFilterChange('ports', text)}
                             keyboardType="numeric"
@@ -1030,7 +1038,7 @@ export default function HomeScreen() {
 
                     <View style={styles.modernFilterGroup}>
                       <ThemedText style={styles.modernFilterGroupTitle}>
-                        Boîte de vitesses
+                        {t('home.filters.gearbox')}
                       </ThemedText>
                       <View style={styles.modernFilterSelectRow}>
                         {['', 'manuelle', 'auto', 'semi-auto'].map((value) => (
@@ -1046,7 +1054,13 @@ export default function HomeScreen() {
                               styles.modernFilterSelectOptionText,
                               searchFilters.boite === value && styles.modernFilterSelectOptionTextActive,
                             ]}>
-                              {value === '' ? 'Tous' : value === 'manuelle' ? 'Manuelle' : value === 'auto' ? 'Automatique' : 'Semi-auto'}
+                              {value === ''
+                                ? t('home.filters.gearbox_all')
+                                : value === 'manuelle'
+                                  ? t('home.filters.gearbox_manual')
+                                  : value === 'auto'
+                                    ? t('home.filters.gearbox_auto')
+                                    : t('home.filters.gearbox_semi')}
                             </ThemedText>
                           </TouchableOpacity>
                         ))}
@@ -1055,7 +1069,7 @@ export default function HomeScreen() {
 
                     <View style={styles.modernFilterGroup}>
                       <ThemedText style={styles.modernFilterGroupTitle}>
-                        Type de carburant
+                        {t('home.filters.fuel')}
                       </ThemedText>
                       <View style={styles.modernFilterSelectRow}>
                         {['', 'diesel', 'gaz', 'essence', 'electrique'].map((value) => (
@@ -1071,7 +1085,15 @@ export default function HomeScreen() {
                               styles.modernFilterSelectOptionText,
                               searchFilters.type_gaz === value && styles.modernFilterSelectOptionTextActive,
                             ]}>
-                              {value === '' ? 'Tous' : value === 'diesel' ? 'Diesel' : value === 'gaz' ? 'Gaz' : value === 'essence' ? 'Essence' : 'Électrique'}
+                              {value === ''
+                                ? t('home.filters.fuel_all')
+                                : value === 'diesel'
+                                  ? t('home.filters.fuel_diesel')
+                                  : value === 'gaz'
+                                    ? t('home.filters.fuel_gas')
+                                    : value === 'essence'
+                                      ? t('home.filters.fuel_petrol')
+                                      : t('home.filters.fuel_electric')}
                             </ThemedText>
                           </TouchableOpacity>
                         ))}
@@ -1080,13 +1102,13 @@ export default function HomeScreen() {
 
                     <View style={styles.modernFilterGroup}>
                       <ThemedText style={styles.modernFilterGroupTitle}>
-                        Type de moteur
+                        {t('home.filters.engineType')}
                       </ThemedText>
                       <View style={styles.modernFilterInputWrapper}>
                         <IconSymbol name="gearshape.fill" size={16} color="#6b7280" />
                         <TextInput
                           style={styles.modernFilterInput}
-                          placeholder="Ex: 1.6L, 2.0L Turbo"
+                          placeholder={t('home.filters.enginePlaceholder')}
                           value={searchFilters.type_enegine}
                           onChangeText={(text) => handleFilterChange('type_enegine', text)}
                           placeholderTextColor="#9ca3af"
@@ -1096,7 +1118,7 @@ export default function HomeScreen() {
 
                     <View style={styles.modernFilterGroup}>
                       <ThemedText style={styles.modernFilterGroupTitle}>
-                        Utilisé par
+                        {t('home.filters.usedBy')}
                       </ThemedText>
                       <View style={styles.modernFilterSelectRow}>
                         {['', 'Particulier', 'Professionnel'].map((value) => (
@@ -1112,7 +1134,11 @@ export default function HomeScreen() {
                               styles.modernFilterSelectOptionText,
                               searchFilters.usedby === value && styles.modernFilterSelectOptionTextActive,
                             ]}>
-                              {value === '' ? 'Tous' : value}
+                              {value === ''
+                                ? t('home.filters.usedBy_all')
+                                : value === 'Particulier'
+                                  ? t('home.filters.usedBy_private')
+                                  : t('home.filters.usedBy_pro')}
                             </ThemedText>
                           </TouchableOpacity>
                         ))}
@@ -1121,7 +1147,7 @@ export default function HomeScreen() {
 
                     <View style={styles.modernFilterGroup}>
                       <ThemedText style={styles.modernFilterGroupTitle}>
-                        Accident
+                        {t('home.filters.accident')}
                       </ThemedText>
                       <View style={styles.modernFilterSelectRow}>
                         {['', 'false', 'true'].map((value) => (
@@ -1137,7 +1163,11 @@ export default function HomeScreen() {
                               styles.modernFilterSelectOptionText,
                               searchFilters.accident === value && styles.modernFilterSelectOptionTextActive,
                             ]}>
-                              {value === '' ? 'Tous' : value === 'false' ? 'Sans accident' : 'Avec accident'}
+                              {value === ''
+                                ? t('home.filters.accident_all')
+                                : value === 'false'
+                                ? t('home.filters.accident_no')
+                                : t('home.filters.accident_yes')}
                             </ThemedText>
                           </TouchableOpacity>
                         ))}
@@ -1170,7 +1200,7 @@ export default function HomeScreen() {
                       style={styles.resetFiltersButton}
                     >
                       <ThemedText style={styles.resetFiltersText}>
-                        Réinitialiser les filtres
+                        {t('home.filters.reset')}
                       </ThemedText>
                     </TouchableOpacity>
                     </ScrollView>
@@ -1183,12 +1213,12 @@ export default function HomeScreen() {
             {loadingCars ? (
               <View style={styles.loadingContainer}>
                 <ActivityIndicator size="large" color="#0d9488" />
-                <ThemedText style={styles.loadingText}>Chargement des véhicules...</ThemedText>
+                <ThemedText style={styles.loadingText}>{t('home.loadingCars')}</ThemedText>
               </View>
             ) : cars.length === 0 ? (
               <View style={styles.emptyContainer}>
                 <IconSymbol name="car.fill" size={48} color="#9ca3af" />
-                <ThemedText style={styles.emptyText}>Aucune voiture disponible</ThemedText>
+                <ThemedText style={styles.emptyText}>{t('home.emptyCars')}</ThemedText>
               </View>
             ) : (
               <View style={styles.carsList}>
@@ -1232,7 +1262,7 @@ export default function HomeScreen() {
                                 style={styles.webStyleCarStatusBadgeGradient}
                               >
                                 <ThemedText style={styles.webStyleCarStatusText}>
-                                  {car.status === 'actif' ? '✓ Certifié' : statusBadge.text}
+                                  {car.status === 'actif' ? `✓ ${t('workshops.certified')}` : statusBadge.text}
                                 </ThemedText>
                               </LinearGradient>
                             </View>
@@ -1278,7 +1308,7 @@ export default function HomeScreen() {
                                 </LinearGradient>
                               </View>
                               <View style={styles.webStyleCarOwnerInfo}>
-                                <ThemedText style={styles.webStyleCarOwnerLabel}>Vendeur</ThemedText>
+                              <ThemedText style={styles.webStyleCarOwnerLabel}>{t('car.seller')}</ThemedText>
                                 <View style={styles.webStyleCarOwnerNameRow}>
                                   <ThemedText style={styles.webStyleCarOwnerName}>
                                     {car.owner.firstName} {car.owner.lastName}
@@ -1303,7 +1333,7 @@ export default function HomeScreen() {
                                 <IconSymbol name="speedometer" size={20} color="#3b82f6" />
                               </LinearGradient>
                               <ThemedText style={styles.webStyleCarDetailValue}>
-                                {car.km?.toLocaleString() || 0} km
+                                {car.km?.toLocaleString() || 0} {t('home.mileageUnit')}
                               </ThemedText>
                             </View>
                             <View style={styles.webStyleCarDetailBox}>
@@ -1336,14 +1366,14 @@ export default function HomeScreen() {
                                 entering={FadeInDown.duration(600).delay(300).springify()}
                               >
                                 <ThemedText style={styles.webStyleCarPrice}>
-                                  {car.price?.toLocaleString() || 0} DA
+                                  {car.price?.toLocaleString() || 0} {t('home.priceCurrency')}
                                 </ThemedText>
                               </Animated.View>
                             </View>
                             {car.status === 'actif' && (
                               <View style={styles.webStyleCarActiveBadge}>
                                 <IconSymbol name="checkmark.circle.fill" size={16} color="#ffffff" />
-                                <ThemedText style={styles.webStyleCarActiveText}>ACTIF</ThemedText>
+                                <ThemedText style={styles.webStyleCarActiveText}>{t('home.active')}</ThemedText>
                               </View>
                             )}
                           </View>
@@ -1360,7 +1390,7 @@ export default function HomeScreen() {
                                 style={styles.webStyleCarDetailsButtonGradient}
                               >
                                 <ThemedText style={styles.webStyleCarDetailsButtonText}>
-                                  Voir Détails
+                                  {t('home.viewDetails')}
                                 </ThemedText>
                               </LinearGradient>
                             </TouchableOpacity>
@@ -1414,7 +1444,7 @@ export default function HomeScreen() {
                 >
                   <IconSymbol name="person.fill" size={scale(18)} color="#0d9488" />
                   <ThemedText style={styles.authMenuItemText}>
-                    Se Connecter
+                    {t('auth.login')}
                   </ThemedText>
                 </TouchableOpacity>
                 <View style={styles.authMenuDivider} />
@@ -1425,7 +1455,7 @@ export default function HomeScreen() {
                 >
                   <IconSymbol name="person.badge.plus.fill" size={scale(18)} color="#0d9488" />
                   <ThemedText style={styles.authMenuItemText}>
-                    S'inscrire
+                    {t('auth.register')}
                   </ThemedText>
                 </TouchableOpacity>
               </LinearGradient>
@@ -1491,7 +1521,7 @@ export default function HomeScreen() {
                 >
                   <IconSymbol name="person.fill" size={scale(20)} color="#0d9488" />
                   <ThemedText style={styles.authMenuItemText}>
-                    Mon Profil
+                    {t('tabs.profile')}
                   </ThemedText>
                 </TouchableOpacity>
                 <View style={styles.authMenuDivider} />
@@ -1505,7 +1535,7 @@ export default function HomeScreen() {
                 >
                   <IconSymbol name="shield.fill" size={scale(20)} color="#3b82f6" />
                   <ThemedText style={styles.authMenuItemText}>
-                    Ateliers Certifiés
+                    {t('home.workshopsCertified')}
                   </ThemedText>
                 </TouchableOpacity>
                 <View style={styles.authMenuDivider} />
@@ -1519,7 +1549,7 @@ export default function HomeScreen() {
                 >
                   <IconSymbol name="qrcode.viewfinder" size={scale(20)} color="#0d9488" />
                   <ThemedText style={styles.authMenuItemText}>
-                    Scanner QR Code
+                    {t('tabs.scan')}
                   </ThemedText>
                 </TouchableOpacity>
                 <View style={styles.authMenuDivider} />
@@ -1530,7 +1560,7 @@ export default function HomeScreen() {
                 >
                   <IconSymbol name="arrow.right.square.fill" size={scale(20)} color="#ef4444" />
                   <ThemedText style={[styles.authMenuItemText, styles.logoutText]}>
-                    Se Déconnecter
+                    {t('profile.logout')}
                   </ThemedText>
                 </TouchableOpacity>
               </LinearGradient>
@@ -1561,7 +1591,7 @@ export default function HomeScreen() {
               {/* Header */}
               <View style={styles.notificationsHeader}>
                 <ThemedText style={styles.notificationsTitle}>
-                  Notifications
+                  {t('notifications.title')}
                 </ThemedText>
                 <TouchableOpacity
                   onPress={() => setShowNotifications(false)}
@@ -1579,7 +1609,7 @@ export default function HomeScreen() {
                   activeOpacity={0.7}
                 >
                   <ThemedText style={styles.markAllReadText}>
-                    Tout marquer comme lu
+                    {t('notifications.markAllAsRead')}
                   </ThemedText>
                 </TouchableOpacity>
               )}
@@ -1594,7 +1624,7 @@ export default function HomeScreen() {
                   <View style={styles.emptyNotifications}>
                     <IconSymbol name="bell.slash.fill" size={scale(48)} color="#9ca3af" />
                     <ThemedText style={styles.emptyNotificationsText}>
-                      Aucune notification
+                      {t('notifications.empty')}
                     </ThemedText>
                   </View>
                 ) : (
@@ -1604,7 +1634,7 @@ export default function HomeScreen() {
                                       notification.id_sender?.firstName || 
                                       (notification.id_sender?.firstName && notification.id_sender?.lastName
                                         ? `${notification.id_sender.firstName} ${notification.id_sender.lastName}`
-                                        : 'Atelier');
+                                        : t('notifications.senderWorkshop'));
                     
                     return (
                       <TouchableOpacity
@@ -1647,7 +1677,7 @@ export default function HomeScreen() {
                             {notification.message}
                           </ThemedText>
                           <ThemedText style={styles.notificationDate}>
-                            {new Date(notification.createdAt).toLocaleDateString('fr-FR', {
+                            {new Date(notification.createdAt).toLocaleDateString(i18n.language.startsWith('ar') ? 'ar' : (i18n.language.startsWith('en') ? 'en-GB' : 'fr-FR'), {
                               day: 'numeric',
                               month: 'short',
                               year: 'numeric',
@@ -1727,15 +1757,16 @@ const styles = StyleSheet.create({
     height: scale(50),
     borderRadius: scale(12),
     overflow: 'hidden',
+    backgroundColor: 'transparent',
     ...Platform.select({
       ios: {
-        shadowColor: '#0d9488',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.2,
-        shadowRadius: 8,
+        shadowColor: 'transparent',
+        shadowOffset: { width: 0, height: 0 },
+        shadowOpacity: 0,
+        shadowRadius: 0,
       },
       android: {
-        elevation: 6,
+        elevation: 0,
       },
     }),
   },
