@@ -1,6 +1,15 @@
 import { Tabs, useSegments } from 'expo-router';
 import React, { useState, useEffect } from 'react';
-import { Platform, StyleSheet, View, Text, DeviceEventEmitter, AppState, Dimensions } from 'react-native';
+import {
+  ActivityIndicator,
+  Platform,
+  StyleSheet,
+  View,
+  Text,
+  DeviceEventEmitter,
+  AppState,
+  Dimensions,
+} from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, { useAnimatedStyle, withSpring } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -101,11 +110,6 @@ export default function TabLayout() {
   const unreadMessagesCount = notifications.filter((n: any) => !n.is_read && n.type === 'message').length;
   const effectiveUnreadMessagesCount = suppressChatBadgeRef.current ? 0 : unreadMessagesCount;
 
-  // Don't render tabs until auth state is loaded
-  if (isLoading) {
-    return null;
-  }
-
   // Show a brief toast above the navigator when a new notification or message arrives
   useEffect(() => {
     const currentNonMsg = notifications.filter((n: any) => !n.is_read && n.type !== 'message').length;
@@ -165,6 +169,16 @@ export default function TabLayout() {
     });
     return () => sub.remove();
   }, []);
+
+  // Don't render tabs until auth state is loaded.
+  // Keep this after hooks so hook order never changes between renders.
+  if (isLoading) {
+    return (
+      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#ffffff' }}>
+        <ActivityIndicator size="large" color="#0d9488" />
+      </View>
+    );
+  }
 
   return (
     <>

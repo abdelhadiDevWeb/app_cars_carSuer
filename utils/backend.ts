@@ -1,13 +1,16 @@
 /**
  * Get the backend URL from environment variables
  * Falls back to default if not set
- * 
- * For React Native/Expo, use EXPO_PUBLIC_ prefix in .env file
- * Example: EXPO_PUBLIC_BACKEND_URL=http://localhost:8001
- * 
+ *
+ * Resolution order:
+ * 1. EXPO_PUBLIC_BACKEND_URL / EXPO_PUBLIC_URLBACKEND (.env, build-time)
+ * 2. expo.extra.API_URL from app.json (via expo-constants — good for EAS/production)
+ * 3. http://localhost:8001
+ *
  * Make sure to restart the Expo server after changing .env file
  */
 import { DeviceEventEmitter } from 'react-native';
+import Constants from 'expo-constants';
 
 function normalizeBackendUrl(rawUrl: string): string {
   // Remove spaces/quotes and accidental leading "=" from .env formatting mistakes.
@@ -32,20 +35,25 @@ function normalizeBackendUrl(rawUrl: string): string {
   }
 }
 
+function getExtraApiUrl(): string | undefined {
+  const extra = Constants.expoConfig?.extra ?? (Constants.manifest as { extra?: Record<string, unknown> } | null)?.extra;
+  const v = extra?.API_URL;
+  return typeof v === 'string' && v.trim() !== '' ? v : undefined;
+}
+
 export function getBackendUrl(): string {
-  // In Expo, environment variables prefixed with EXPO_PUBLIC_ are available
-  // They are loaded from .env file at build time
-  const rawBackendUrl =
-    process.env.EXPO_PUBLIC_BACKEND_URL ||
-    process.env.EXPO_PUBLIC_URLBACKEND ||
-    'http://localhost:8001';
+  // In Expo, EXPO_PUBLIC_* vars are embedded at build time from .env
+  const fromEnv =
+    process.env.EXPO_PUBLIC_BACKEND_URL || process.env.EXPO_PUBLIC_URLBACKEND || '';
+  const fromAppConfig = getExtraApiUrl() || '';
+  const rawBackendUrl = fromEnv.trim() !== '' ? fromEnv : fromAppConfig.trim() !== '' ? fromAppConfig : 'http://localhost:8001';
   const cleanUrl = normalizeBackendUrl(rawBackendUrl);
-  
+
   // Log in development to help debug
   if (__DEV__) {
     console.log('Backend URL:', cleanUrl, '(raw:', rawBackendUrl, ')');
   }
-  
+
   return cleanUrl;
 }
 

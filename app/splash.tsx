@@ -4,6 +4,7 @@ import {
   View,
   TouchableOpacity,
   Dimensions,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -16,6 +17,9 @@ import Animated, {
   withTiming,
   withSequence,
   withDelay,
+  withRepeat,
+  cancelAnimation,
+  Easing,
   FadeIn,
   FadeInDown,
   FadeInUp,
@@ -24,6 +28,7 @@ import { useRouter } from 'expo-router';
 import { ThemedText } from '@/components/themed-text';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAuth } from '@/contexts/AuthContext';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { apiRequest } from '@/utils/backend';
 import { getPadding, getFontSizes, scale } from '@/utils/responsive';
 import { useTranslation } from 'react-i18next';
@@ -36,7 +41,7 @@ const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpaci
 
 export default function SplashScreen() {
   const router = useRouter();
-  const { isAuthenticated, isLoading, logout } = useAuth();
+  const { isAuthenticated, isLoading, logout, user } = useAuth();
   const { t, i18n } = useTranslation();
   const [showExpiredModal, setShowExpiredModal] = useState(false);
   const [showStartButton, setShowStartButton] = useState(false);
@@ -60,16 +65,39 @@ export default function SplashScreen() {
     }
   }, [isAuthenticated, isLoading]);
 
-  // Redirect if already authenticated (after subscription check)
+  // Redirect if already authenticated (after subscription check for seller clients only)
   useEffect(() => {
     const checkAndRoute = async () => {
       if (isLoading || !isAuthenticated) return;
+      // Admins must use the web dashboard only — clear any stored session from the app.
+      if (user?.type === 'user' && user?.role === 'admin') {
+        try {
+          await AsyncStorage.setItem('admin_web_only_notice', '1');
+        } catch {
+          /* ignore */
+        }
+        await logout();
+        router.replace('/login');
+        return;
+      }
+      // Matches server requireSeller: workshops/admins cannot call this route — 403 was wrongly treated as "expired".
+      const isSellerClient = user?.type === 'user' && user?.role !== 'admin';
+      if (!isSellerClient) {
+        router.replace('/(tabs)');
+        return;
+      }
       try {
         const res = await apiRequest('/abonnement/my-subscription');
+        if (res.status === 401) {
+          return;
+        }
+        if (!res.ok) {
+          router.replace('/(tabs)');
+          return;
+        }
         const data = await res.json().catch(() => null);
         const now = Date.now();
         const isExpired =
-          !res.ok ||
           !data?.ok ||
           !data?.hasSubscription ||
           !data?.subscription?.date_end ||
@@ -90,21 +118,21 @@ export default function SplashScreen() {
           return;
         }
         router.replace('/(tabs)');
-      } catch (e) {
-        // If check fails, still allow into app (or choose to block)
+      } catch {
         router.replace('/(tabs)');
       }
     };
     checkAndRoute();
-  }, [isAuthenticated, isLoading, router, logout]);
+  }, [isAuthenticated, isLoading, router, logout, user?.type, user?.role]);
 
   // Start animations on mount
   useEffect(() => {
-    // Background rotation animation (continuous)
-    backgroundRotation.value = withTiming(360, {
-      duration: 20000,
-      repeat: Infinity,
-    });
+    // Background rotation (infinite). `withTiming` does not support `repeat`; invalid options can crash release builds.
+    backgroundRotation.value = withRepeat(
+      withTiming(360, { duration: 20000, easing: Easing.linear }),
+      -1,
+      false
+    );
 
     // Logo animation sequence
     logoOpacity.value = withTiming(1, { duration: 800 });
@@ -123,6 +151,16 @@ export default function SplashScreen() {
     // Button animation (we trigger visibility with state; animation starts from 0)
     buttonOpacity.value = withTiming(0, { duration: 0 });
     buttonScale.value = withTiming(0, { duration: 0 });
+
+    return () => {
+      cancelAnimation(backgroundRotation);
+      cancelAnimation(logoOpacity);
+      cancelAnimation(logoScale);
+      cancelAnimation(titleOpacity);
+      cancelAnimation(titleTranslateY);
+      cancelAnimation(buttonOpacity);
+      cancelAnimation(buttonScale);
+    };
   }, []);
 
   const logoAnimatedStyle = useAnimatedStyle(() => ({
@@ -210,8 +248,16 @@ export default function SplashScreen() {
     );
     }
 
-    // Authenticated + not expired: route happens in effect -> render nothing to avoid "double splash".
-    return null;
+    // Authenticated + routing in progress: keep a real view (not null) so Android/iOS never sit on an empty tree during slow API (e.g. Render cold start ~5–10s).
+    return (
+      <SafeAreaView
+        style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#ffffff' }}
+        edges={['top', 'bottom']}
+      >
+        <StatusBar style="dark" />
+        <ActivityIndicator size="large" color="#0d9488" />
+      </SafeAreaView>
+    );
   }
 
   return (

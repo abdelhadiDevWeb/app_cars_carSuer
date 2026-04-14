@@ -64,7 +64,7 @@ export default function HomeScreen() {
   const router = useRouter();
   const { isAuthenticated, user, logout, token } = useAuth();
   const { notifications, unreadCount: unreadNotificationsCount, markAsRead, markAllAsRead } = useNotifications();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   // Exclude message notifications from header badge count (only show non-message notifications)
   const nonMessageNotificationsCount = notifications.filter((n) => !n.is_read && n.type !== 'message').length;
   const [currentCarouselIndex, setCurrentCarouselIndex] = useState(0);

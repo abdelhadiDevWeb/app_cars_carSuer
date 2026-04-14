@@ -4,11 +4,20 @@ import { StatusBar } from 'expo-status-bar';
 import { useEffect, useRef, useState } from 'react';
 import 'react-native-reanimated';
 import * as SplashScreen from 'expo-splash-screen';
-import { AppState, StyleSheet, TouchableOpacity, View, DeviceEventEmitter } from 'react-native';
+import {
+  ActivityIndicator,
+  AppState,
+  StyleSheet,
+  TouchableOpacity,
+  View,
+  DeviceEventEmitter,
+} from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
 
 import { useColorScheme } from '@/hooks/use-color-scheme';
 import { AuthProvider, useAuth } from '@/contexts/AuthContext';
+import { NotificationProvider } from '@/contexts/NotificationContext';
 import { ChatProvider } from '@/contexts/ChatContext';
 import { NotificationBanner } from '@/components/NotificationBanner';
 import { LanguageProvider } from '@/contexts/LanguageContext';
@@ -31,9 +40,25 @@ export const unstable_settings = {
 
 // Component to handle navigation based on auth state
 function NavigationHandler() {
-  const { isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, isLoading, user, logout } = useAuth();
   const segments = useSegments();
   const router = useRouter();
+
+  // Admins are web-only; clear session whenever an admin JWT is present so the app never stays “logged in”.
+  useEffect(() => {
+    if (isLoading || !isAuthenticated) return;
+    if (user?.type === 'user' && user?.role === 'admin') {
+      void (async () => {
+        try {
+          await AsyncStorage.setItem('admin_web_only_notice', '1');
+        } catch {
+          /* ignore */
+        }
+        await logout();
+        router.replace('/login');
+      })();
+    }
+  }, [isAuthenticated, isLoading, user?.type, user?.role, router, logout]);
 
   useEffect(() => {
     if (isLoading) return;
@@ -89,7 +114,7 @@ function SplashGate() {
 }
 
 function ForegroundRefreshAndSubscriptionGuard() {
-  const { isAuthenticated, isLoading, logout } = useAuth();
+  const { isAuthenticated, isLoading, logout, user } = useAuth();
   const { isReady } = useLanguage();
   const router = useRouter();
   const { t, i18n: i18nHook } = useTranslation();
@@ -102,13 +127,22 @@ function ForegroundRefreshAndSubscriptionGuard() {
     const checkSubscription = async () => {
       if (checkingRef.current) return;
       if (!isAuthenticated || isLoading) return;
+      // Same rule as server requireSeller: only normal clients need this route; workshops/admins get 403 and must not be treated as "expired".
+      const isSellerClient = user?.type === 'user' && user?.role !== 'admin';
+      if (!isSellerClient) return;
+
       checkingRef.current = true;
       try {
         const res = await apiRequest('/abonnement/my-subscription');
+        if (res.status === 401) {
+          return;
+        }
+        if (!res.ok) {
+          return;
+        }
         const data = await res.json().catch(() => null);
         const now = Date.now();
         const isExpired =
-          !res.ok ||
           !data?.ok ||
           !data?.hasSubscription ||
           !data?.subscription?.date_end ||
@@ -144,7 +178,7 @@ function ForegroundRefreshAndSubscriptionGuard() {
     });
 
     return () => sub.remove();
-  }, [isAuthenticated, isLoading, isReady]);
+  }, [isAuthenticated, isLoading, isReady, user?.type, user?.role]);
 
   if (!showExpiredModal) return null;
 
@@ -190,32 +224,34 @@ export default function RootLayout() {
   return (
     <I18nextProvider i18n={i18n}>
       <LanguageProvider>
-    <AuthProvider>
-      <SplashGate />
-      <ForegroundRefreshAndSubscriptionGuard />
-      <ChatProvider>
-        <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
-          <NavigationHandler />
-          <Stack>
-            <Stack.Screen name="splash" options={{ headerShown: false }} />
-            <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-            <Stack.Screen name="login" options={{ headerShown: false }} />
-            <Stack.Screen name="register" options={{ headerShown: false }} />
-            <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
-          </Stack>
-          <NotificationBanner />
-          {/* Language button placement:
-              - On splash: show in header (top-right)
-              - On other pages: show above bottom navigation (bottom-right) */}
-          {inSplash ? (
-            <LanguageFloatingButton position="top-right" variant="icon" />
-          ) : (
-            <LanguageFloatingButton position="bottom-right" bottomOffset={0} variant="icon" />
-          )}
-          <StatusBar style="auto" />
-        </ThemeProvider>
-      </ChatProvider>
-    </AuthProvider>
+        <AuthProvider>
+          <NotificationProvider>
+            <SplashGate />
+            <ForegroundRefreshAndSubscriptionGuard />
+            <ChatProvider>
+              <ThemeProvider value={colorScheme === 'dark' ? DarkTheme : DefaultTheme}>
+                <NavigationHandler />
+                <Stack>
+                  <Stack.Screen name="splash" options={{ headerShown: false }} />
+                  <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+                  <Stack.Screen name="login" options={{ headerShown: false }} />
+                  <Stack.Screen name="register" options={{ headerShown: false }} />
+                  <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
+                </Stack>
+                <NotificationBanner />
+                {/* Language button placement:
+                    - On splash: show in header (top-right)
+                    - On other pages: show above bottom navigation (bottom-right) */}
+                {inSplash ? (
+                  <LanguageFloatingButton position="top-right" variant="icon" />
+                ) : (
+                  <LanguageFloatingButton position="bottom-right" bottomOffset={0} variant="icon" />
+                )}
+                <StatusBar style="auto" />
+              </ThemeProvider>
+            </ChatProvider>
+          </NotificationProvider>
+        </AuthProvider>
       </LanguageProvider>
     </I18nextProvider>
   );

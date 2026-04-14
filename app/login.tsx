@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   StyleSheet,
   View,
@@ -22,9 +22,13 @@ import { apiRequest } from '@/utils/backend';
 import { useAuth } from '@/contexts/AuthContext';
 import { SCREEN_WIDTH, getPadding, getFontSizes, scale } from '@/utils/responsive';
 import { useTranslation } from 'react-i18next';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const padding = getPadding();
 const fontSizes = getFontSizes();
+
+const ADMIN_WEB_APP_URL = 'https://carsure-dz.vercel.app/';
+const ADMIN_WEB_ONLY_NOTICE_KEY = 'admin_web_only_notice';
 
 export default function LoginPage() {
   const router = useRouter();
@@ -38,104 +42,218 @@ export default function LoginPage() {
   const [error, setError] = useState('');
   const [showActivationModal, setShowActivationModal] = useState(false);
   const [showExpiredModal, setShowExpiredModal] = useState(false);
+  const [showAdminWebModal, setShowAdminWebModal] = useState(false);
+  const [showVerifyEmailModal, setShowVerifyEmailModal] = useState(false);
+  const [pendingVerifyEmail, setPendingVerifyEmail] = useState('');
+  const [verifyAccountType, setVerifyAccountType] = useState<'user' | 'workshop'>('user');
+  const [verifyCode, setVerifyCode] = useState('');
+  const [verifyModalError, setVerifyModalError] = useState('');
+  const [isResending, setIsResending] = useState(false);
+  const [isVerifyingCode, setIsVerifyingCode] = useState(false);
 
-  const handleSubmit = async () => {
-    if (!email.trim() || !password.trim()) {
-      setError(t('auth.requiredFields'));
-      return;
-    }
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const v = await AsyncStorage.getItem(ADMIN_WEB_ONLY_NOTICE_KEY);
+        if (cancelled || v !== '1') return;
+        await AsyncStorage.removeItem(ADMIN_WEB_ONLY_NOTICE_KEY);
+        setShowAdminWebModal(true);
+      } catch {
+        /* ignore */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
+  const submitLoginWithCredentials = async (loginEmail: string, loginPassword: string) => {
     setIsLoading(true);
     setError('');
 
     try {
       const response = await apiRequest('/auth/login', {
         method: 'POST',
-        body: JSON.stringify({ email: email.trim(), password }),
+        body: JSON.stringify({ email: loginEmail.trim(), password: loginPassword }),
       });
 
-      let data;
+      let data: Record<string, unknown>;
       try {
         data = await response.json();
       } catch (jsonError) {
-        // If response is not JSON, it's likely a network/server error
         console.error('Failed to parse JSON response:', jsonError);
-        setError(t('login.serverError', { status: response.status }));
+        setError(t('login.serverError'));
         setIsLoading(false);
         return;
       }
 
       if (!response.ok) {
-        // Check if account needs activation
+        if (data.needsVerification) {
+          setPendingVerifyEmail(loginEmail.trim());
+          setVerifyAccountType(data.accountType === 'workshop' ? 'workshop' : 'user');
+          setVerifyCode('');
+          setVerifyModalError('');
+          setShowVerifyEmailModal(true);
+          setIsLoading(false);
+          return;
+        }
         if (data.needsActivation && data.status === false) {
           setShowActivationModal(true);
           setIsLoading(false);
           return;
         }
-        setError(data?.message || t('login.loginError'));
+        setError(t('login.loginError'));
         setIsLoading(false);
         return;
       }
 
-      // Store token and user data
       if (data.token && data.user) {
-        await login(data.token, {
-          _id: data.user._id || data.user.id,
-          email: data.user.email,
-          firstName: data.user.firstName,
-          lastName: data.user.lastName,
-          type: data.type,
-          role: data.role,
-        });
-
-        // After login, verify subscription before navigating
-        try {
-          const res = await apiRequest('/abonnement/my-subscription');
-          const subData = await res.json().catch(() => null);
-          const now = Date.now();
-          const isExpired =
-            !res.ok ||
-            !subData?.ok ||
-            !subData?.hasSubscription ||
-            !subData?.subscription?.date_end ||
-            new Date(subData.subscription.date_end).getTime() < now;
-
-          if (isExpired) {
-            setShowExpiredModal(true);
-            // Best-effort server-side deactivation (ignore failures)
-            try {
-              await apiRequest('/auth/profile', {
-                method: 'PUT',
-                body: JSON.stringify({ status: false }),
-              });
-            } catch {}
-            try {
-              await apiRequest('/abonnement/deactivate', { method: 'POST' });
-            } catch {}
-            // Do NOT change page or logout until user clicks OK in the modal
-            setIsLoading(false);
-            return;
-          }
-        } catch {
-          // If subscription check fails, allow navigation but you may choose to block instead
+        const isAdmin = data.type === 'user' && data.role === 'admin';
+        if (isAdmin) {
+          setShowAdminWebModal(true);
+          setIsLoading(false);
+          return;
         }
 
-        // Navigate to app tabs if subscription is valid
+        await login(data.token as string, {
+          _id: (data.user as { _id?: string; id?: string })._id || (data.user as { id?: string }).id,
+          email: (data.user as { email: string }).email,
+          firstName: (data.user as { firstName?: string }).firstName,
+          lastName: (data.user as { lastName?: string }).lastName,
+          type: data.type as string,
+          role: data.role as string,
+        });
+
+        const isSellerClient = data.type === 'user' && data.role !== 'admin';
+        if (isSellerClient) {
+          try {
+            const res = await apiRequest('/abonnement/my-subscription');
+            if (res.status === 401) {
+              setIsLoading(false);
+              return;
+            }
+            if (!res.ok) {
+              router.replace('/(tabs)');
+              setIsLoading(false);
+              return;
+            }
+            const subData = await res.json().catch(() => null);
+            const now = Date.now();
+            const isExpired =
+              !subData?.ok ||
+              !subData?.hasSubscription ||
+              !subData?.subscription?.date_end ||
+              new Date(subData.subscription.date_end).getTime() < now;
+
+            if (isExpired) {
+              setShowExpiredModal(true);
+              try {
+                await apiRequest('/auth/profile', {
+                  method: 'PUT',
+                  body: JSON.stringify({ status: false }),
+                });
+              } catch {}
+              try {
+                await apiRequest('/abonnement/deactivate', { method: 'POST' });
+              } catch {}
+              setIsLoading(false);
+              return;
+            }
+          } catch {
+            // Network etc. — allow access
+          }
+        }
+
         router.replace('/(tabs)');
       }
-    } catch (error: any) {
-      console.error('Login Error:', error);
-      const errorMessage = error?.message || t('login.connectionError');
-      if (errorMessage.includes('fetch') || errorMessage.includes('network') || errorMessage.includes('Failed to connect') || errorMessage.includes('Impossible de se connecter')) {
-        setError(
-          t('login.cannotConnect', {
-            url: process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:8001',
-          })
-        );
-      } else {
-        setError(errorMessage);
-      }
       setIsLoading(false);
+    } catch (error: unknown) {
+      console.error('Login Error:', error);
+      setError(t('login.cannotConnect'));
+      setIsLoading(false);
+    }
+  };
+
+  const handleSubmit = async () => {
+    if (!email.trim() || !password.trim()) {
+      setError(t('auth.requiredFields'));
+      return;
+    }
+    await submitLoginWithCredentials(email.trim(), password);
+  };
+
+  const handleResendVerification = async () => {
+    if (!pendingVerifyEmail.trim()) return;
+    setIsResending(true);
+    setVerifyModalError('');
+    try {
+      const response = await apiRequest('/auth/resend-verification', {
+        method: 'POST',
+        body: JSON.stringify({ email: pendingVerifyEmail.trim() }),
+      });
+      let data: { ok?: boolean; sent?: boolean; alreadyVerified?: boolean } = {};
+      try {
+        data = await response.json();
+      } catch {
+        setVerifyModalError(t('login.resendFailed'));
+        setIsResending(false);
+        return;
+      }
+      if (response.status === 400 && data.alreadyVerified) {
+        setVerifyModalError(t('login.alreadyVerified'));
+        setIsResending(false);
+        return;
+      }
+      if (!response.ok) {
+        setVerifyModalError(t('login.resendFailed'));
+        setIsResending(false);
+        return;
+      }
+      if (data.sent === true) {
+        Alert.alert('', t('login.resendSuccessSent'));
+      } else {
+        Alert.alert('', t('login.resendSuccessGeneric'));
+      }
+    } catch {
+      setVerifyModalError(t('login.resendFailed'));
+    } finally {
+      setIsResending(false);
+    }
+  };
+
+  const handleConfirmVerifyCode = async () => {
+    const normalized = verifyCode.replace(/\D/g, '');
+    if (normalized.length !== 6) {
+      setVerifyModalError(t('register.codeMustBe6'));
+      return;
+    }
+    setIsVerifyingCode(true);
+    setVerifyModalError('');
+    try {
+      const typeForApi = verifyAccountType === 'workshop' ? 'workshop' : 'user';
+      const response = await apiRequest('/auth/verify-email', {
+        method: 'POST',
+        body: JSON.stringify({
+          email: pendingVerifyEmail.trim(),
+          code: normalized,
+          type: typeForApi,
+        }),
+      });
+      await response.json().catch(() => ({}));
+      if (!response.ok) {
+        setVerifyModalError(t('register.invalidOrExpired'));
+        setIsVerifyingCode(false);
+        return;
+      }
+      setShowVerifyEmailModal(false);
+      setVerifyCode('');
+      setVerifyModalError('');
+      await submitLoginWithCredentials(pendingVerifyEmail.trim(), password);
+    } catch {
+      setVerifyModalError(t('register.invalidOrExpired'));
+    } finally {
+      setIsVerifyingCode(false);
     }
   };
 
@@ -304,7 +422,7 @@ export default function LoginPage() {
 
             {/* Back to Home */}
             <TouchableOpacity
-              onPress={() => router.back()}
+              onPress={() => router.replace('/(tabs)')}
               style={styles.backButton}
             >
               <IconSymbol name="chevron.left" size={16} color="#6b7280" />
@@ -342,6 +460,149 @@ export default function LoginPage() {
                   <ThemedText style={styles.modalButtonText}>{t('login.activationOk')}</ThemedText>
                 </LinearGradient>
               </TouchableOpacity>
+            </LinearGradient>
+          </View>
+        </View>
+      )}
+
+      {/* Email not verified — code + resend */}
+      {showVerifyEmailModal && (
+        <View style={styles.modalOverlay}>
+          <View key={i18n.language} style={[styles.modalContent, styles.verifyModalContent]}>
+            <ScrollView
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={styles.verifyModalScroll}
+            >
+              <LinearGradient
+                colors={['rgba(255, 255, 255, 0.98)', 'rgba(255, 255, 255, 0.95)']}
+                style={styles.modalBlur}
+              >
+                <View style={styles.modalIconContainer}>
+                  <IconSymbol name="envelope.fill" size={48} color="#f59e0b" />
+                </View>
+                <ThemedText style={styles.modalTitle}>{t('login.verifyEmailTitle')}</ThemedText>
+                <ThemedText style={styles.modalText}>{t('login.verifyEmailBody')}</ThemedText>
+                <ThemedText style={styles.verifyModalEmail}>{pendingVerifyEmail}</ThemedText>
+
+                <View style={styles.verifyModalField}>
+                  <ThemedText style={styles.verifyModalLabel}>{t('register.verifyCodeLabel')}</ThemedText>
+                  <TextInput
+                    style={styles.verifyModalInput}
+                    placeholder={t('register.verifyCodePlaceholder')}
+                    placeholderTextColor="#9ca3af"
+                    value={verifyCode}
+                    onChangeText={(v) => {
+                      setVerifyCode(v.replace(/\D/g, '').slice(0, 6));
+                      setVerifyModalError('');
+                    }}
+                    keyboardType="number-pad"
+                    maxLength={6}
+                  />
+                </View>
+
+                {verifyModalError ? (
+                  <ThemedText style={styles.verifyModalError}>{verifyModalError}</ThemedText>
+                ) : null}
+
+                <TouchableOpacity
+                  onPress={handleConfirmVerifyCode}
+                  disabled={isVerifyingCode || verifyCode.length !== 6}
+                  style={[styles.modalButton, styles.verifyModalPrimaryMargin]}
+                >
+                  <LinearGradient
+                    colors={['#0d9488', '#14b8a6']}
+                    style={styles.modalButtonGradient}
+                  >
+                    {isVerifyingCode ? (
+                      <ActivityIndicator color="#ffffff" />
+                    ) : (
+                      <ThemedText style={styles.modalButtonText}>{t('register.verify')}</ThemedText>
+                    )}
+                  </LinearGradient>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={handleResendVerification}
+                  disabled={isResending}
+                  style={[styles.modalButton, { marginBottom: 10 }]}
+                >
+                  <LinearGradient
+                    colors={['#64748b', '#475569']}
+                    style={styles.modalButtonGradient}
+                  >
+                    {isResending ? (
+                      <ActivityIndicator color="#ffffff" />
+                    ) : (
+                      <ThemedText style={styles.modalButtonText}>
+                        {t('login.resendVerificationEmail')}
+                      </ThemedText>
+                    )}
+                  </LinearGradient>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={() => {
+                    setShowVerifyEmailModal(false);
+                    setVerifyCode('');
+                    setVerifyModalError('');
+                  }}
+                  style={styles.modalButton}
+                >
+                  <ThemedText style={styles.verifyModalDismiss}>{t('common.cancel')}</ThemedText>
+                </TouchableOpacity>
+              </LinearGradient>
+            </ScrollView>
+          </View>
+        </View>
+      )}
+
+      {/* Admin: web only — no app access */}
+      {showAdminWebModal && (
+        <View style={styles.modalOverlay}>
+          <View key={i18n.language} style={styles.modalContent}>
+            <LinearGradient
+              colors={['rgba(255, 255, 255, 0.98)', 'rgba(255, 255, 255, 0.95)']}
+              style={styles.modalBlur}
+            >
+              <View style={styles.modalIconContainer}>
+                <IconSymbol name="lock.fill" size={48} color="#64748b" />
+              </View>
+              <ThemedText style={styles.modalTitle}>{t('login.adminWebOnlyTitle')}</ThemedText>
+              <ThemedText style={styles.modalText}>{t('login.adminWebOnlyBody')}</ThemedText>
+              <ThemedText style={[styles.modalText, { fontWeight: '700', color: '#0d9488' }]}>
+                {ADMIN_WEB_APP_URL}
+              </ThemedText>
+              <View style={{ width: '100%', gap: 10 }}>
+                <TouchableOpacity
+                  onPress={async () => {
+                    try {
+                      await Linking.openURL(ADMIN_WEB_APP_URL);
+                    } catch {}
+                  }}
+                  style={styles.modalButton}
+                >
+                  <LinearGradient
+                    colors={['#0d9488', '#14b8a6']}
+                    style={styles.modalButtonGradient}
+                  >
+                    <ThemedText style={styles.modalButtonText}>
+                      {t('login.adminWebOpenSite')}
+                    </ThemedText>
+                  </LinearGradient>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={() => setShowAdminWebModal(false)}
+                  style={styles.modalButton}
+                >
+                  <LinearGradient
+                    colors={['#64748b', '#475569']}
+                    style={styles.modalButtonGradient}
+                  >
+                    <ThemedText style={styles.modalButtonText}>{t('common.ok')}</ThemedText>
+                  </LinearGradient>
+                </TouchableOpacity>
+              </View>
             </LinearGradient>
           </View>
         </View>
@@ -722,5 +983,60 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: '#ffffff',
+  },
+  verifyModalContent: {
+    maxHeight: '92%',
+  },
+  verifyModalScroll: {
+    flexGrow: 1,
+  },
+  verifyModalEmail: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#0d9488',
+    textAlign: 'center',
+    marginBottom: 16,
+    width: '100%',
+  },
+  verifyModalField: {
+    width: '100%',
+    marginBottom: 8,
+  },
+  verifyModalLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#374151',
+    marginBottom: 8,
+    alignSelf: 'flex-start',
+  },
+  verifyModalInput: {
+    width: '100%',
+    height: scale(48),
+    fontSize: fontSizes.lg,
+    color: '#1f2937',
+    backgroundColor: '#f9fafb',
+    borderRadius: scale(12),
+    borderWidth: 2,
+    borderColor: '#e5e7eb',
+    paddingHorizontal: 16,
+    textAlign: 'center',
+    letterSpacing: 4,
+  },
+  verifyModalError: {
+    fontSize: 14,
+    color: '#ef4444',
+    textAlign: 'center',
+    marginBottom: 12,
+    width: '100%',
+  },
+  verifyModalPrimaryMargin: {
+    marginBottom: 10,
+  },
+  verifyModalDismiss: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#64748b',
+    textAlign: 'center',
+    paddingVertical: 8,
   },
 });

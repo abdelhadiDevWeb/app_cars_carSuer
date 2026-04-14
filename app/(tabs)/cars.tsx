@@ -230,9 +230,9 @@ export default function CarsScreen() {
       } else {
         setAppointments([]);
       }
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Error fetching my cars/appointments:', err);
-      Alert.alert(t('common.error'), err?.message || t('cars.fetchMyCarsFailed'));
+      Alert.alert(t('common.error'), t('cars.fetchMyCarsFailed'));
     } finally {
       setLoading(false);
     }
@@ -497,8 +497,9 @@ export default function CarsScreen() {
         setShowUploadModal(false);
         setUploadPercent(0);
       }
-    } catch (err: any) {
-      Alert.alert(t('common.error'), err?.message || t('cars.errors.openGallery'));
+    } catch (err: unknown) {
+      console.error('pickImages:', err);
+      Alert.alert(t('common.error'), t('cars.errors.openGallery'));
     }
   };
 
@@ -566,8 +567,9 @@ export default function CarsScreen() {
         setShowUploadModal(false);
         setUploadPercent(0);
       }
-    } catch (err: any) {
-      Alert.alert(t('common.error'), err?.message || t('cars.errors.openCamera'));
+    } catch (err: unknown) {
+      console.error('takePicture:', err);
+      Alert.alert(t('common.error'), t('cars.errors.openCamera'));
     }
   };
 
@@ -691,26 +693,14 @@ export default function CarsScreen() {
           setVinDetails(data.details || null);
         } else {
           setVinValid(false);
-          let errorMessage = t('cars.vinInvalidOrNotFound');
-          
-          if (data?.message) {
-            if (typeof data.message === 'string') {
-              errorMessage = data.message;
-            }
-          } else if (data?.error) {
-            if (typeof data.error === 'string') {
-              errorMessage = data.error;
-            }
-          }
-          
-          setVinError(errorMessage);
+          setVinError(t('cars.vinInvalidOrNotFound'));
           setVinRemark('');
           setVinDetails(null);
         }
-      } catch (error: any) {
+      } catch (error: unknown) {
         console.error('Error verifying VIN:', error);
         setVinValid(false);
-        setVinError(error?.message || t('cars.vinConnectionError'));
+        setVinError(t('cars.vinConnectionError'));
         setVinRemark('');
         setVinDetails(null);
       } finally {
@@ -938,16 +928,13 @@ export default function CarsScreen() {
       });
       
       if (!res.ok || !data?.ok) {
-        const msg = data?.message || t('cars.errors.genericCreate');
-        const extra = Array.isArray(data?.errors) ? `\n- ${data.errors.join('\n- ')}` : '';
-        
-        console.error('[Car Creation] Error response:', { 
-          status: res.status, 
+        console.error('[Car Creation] Error response:', {
+          status: res.status,
           statusText: res.statusText,
           data,
         });
-        
-        Alert.alert(t('common.error'), `${msg}${extra}`);
+
+        Alert.alert(t('common.error'), t('cars.errors.genericCreate'));
         return;
       }
       
@@ -981,9 +968,9 @@ export default function CarsScreen() {
       setBypassVin(false);
       await fetchMyCarsAndRdv();
       Alert.alert(t('common.success'), t('cars.success.carCreated'));
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error('Create car error:', err);
-      Alert.alert(t('common.error'), err?.message || t('cars.errors.genericCreate'));
+      Alert.alert(t('common.error'), t('cars.errors.genericCreate'));
     } finally {
       setCreatingCar(false);
       setShowUploadModal(false);
@@ -1134,9 +1121,7 @@ export default function CarsScreen() {
       });
       const data = await res.json().catch(() => null);
       if (!res.ok || !data?.ok) {
-        const msg = data?.message || t('cars.errors.genericCreateRdv');
-        const extra = Array.isArray(data?.errors) ? `\n- ${data.errors.join('\n- ')}` : '';
-        Alert.alert(t('common.error'), `${msg}${extra}`);
+        Alert.alert(t('common.error'), t('cars.errors.genericCreateRdv'));
         return;
       }
       setShowRdvModal(false);
@@ -1144,8 +1129,9 @@ export default function CarsScreen() {
       setSelectedCarForRdv(null);
       await fetchMyCarsAndRdv();
       Alert.alert(t('common.success'), t('cars.success.rdvCreated'));
-    } catch (err: any) {
-      Alert.alert(t('common.error'), err?.message || t('cars.errors.genericCreateRdv'));
+    } catch (err: unknown) {
+      console.error('submitCreateRdv:', err);
+      Alert.alert(t('common.error'), t('cars.errors.genericCreateRdv'));
     } finally {
       setCreatingRdv(false);
     }

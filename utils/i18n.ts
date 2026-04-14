@@ -123,11 +123,24 @@ const resources = {
         activationBody:
           "Votre compte n'est pas encore activé par l'administrateur. Veuillez patienter jusqu'à ce que votre compte soit activé.",
         activationOk: 'Compris',
-        serverError: 'Erreur serveur ({{status}}). Vérifiez que le backend est démarré.',
-        loginError: 'Erreur lors de la connexion',
+        serverError: 'Une erreur est survenue. Veuillez réessayer plus tard.',
+        loginError: 'Identifiants incorrects ou compte indisponible. Veuillez réessayer.',
         connectionError: 'Erreur de connexion',
         cannotConnect:
-          'Impossible de se connecter au serveur. Vérifiez votre connexion internet et que le backend est démarré sur {{url}}',
+          'Impossible de joindre le service. Vérifiez votre connexion internet et réessayez.',
+        adminWebOnlyTitle: 'Espace administrateur',
+        adminWebOnlyBody:
+          "Vous ne pouvez pas accéder à votre espace administrateur depuis l'application mobile. Utilisez le site web CarSure DZ :",
+        adminWebOpenSite: 'Ouvrir le site web',
+        verifyEmailTitle: 'Email non confirmé',
+        verifyEmailBody:
+          "Votre compte existe mais l'email n'est pas encore confirmé. Entrez le code reçu par email ou demandez un nouvel envoi.",
+        resendVerificationEmail: 'Renvoyer le code',
+        resendSuccessSent: 'Un nouveau code de vérification a été envoyé à votre adresse email.',
+        resendSuccessGeneric:
+          'Si un compte non vérifié existe pour cet email, un code vient d’être envoyé.',
+        resendFailed: "Impossible d'envoyer le code. Réessayez plus tard.",
+        alreadyVerified: 'Cette adresse est déjà vérifiée. Essayez de vous connecter.',
       },
       register: {
         title: 'Inscription',
@@ -142,7 +155,9 @@ const resources = {
         emailPlaceholder: 'votre@email.com',
         workshopEmailPlaceholder: 'atelier@email.com',
         phone: 'Téléphone',
-        phonePlaceholder: '+213 XXX XX XX XX',
+        phonePlaceholder: '0XXXXXXXXX (8 à 10 chiffres)',
+        phoneInvalid:
+          'Le téléphone doit commencer par 0, contenir uniquement des chiffres, et faire 8 à 10 caractères.',
         address: 'Adresse',
         addressPlaceholder: 'Adresse',
         passwordLabel: 'Mot de passe',
@@ -151,6 +166,9 @@ const resources = {
         workshopNamePlaceholder: "Nom de l'atelier",
         workshopType: "Type d'atelier *",
         selectType: 'Sélectionner un type',
+        type_mechanic: 'Mécanicien',
+        type_paint: 'Inspecteur structure carrosserie',
+        type_both: 'Mécanicien + Inspecteur structure carrosserie',
         alreadyHaveAccount: 'Vous avez déjà un compte?',
         signIn: 'Se connecter',
         back: 'Retour',
@@ -161,8 +179,8 @@ const resources = {
           "Votre compte a été créé et votre email est vérifié. Vous devez attendre que l'admin active votre compte.",
         goToLogin: 'Aller à la page de connexion',
         passwordsNoMatch: 'Les mots de passe ne correspondent pas',
-        validationError: 'Erreur de validation',
-        registerError: "Erreur lors de l'inscription",
+        validationError: 'Les informations ne peuvent pas être enregistrées. Vérifiez le formulaire et réessayez.',
+        registerError: "L'inscription n'a pas pu aboutir. Veuillez réessayer plus tard.",
         verifyTitle: 'Vérification email',
         verifyCheckEmail: 'Vérifiez votre email',
         verifySentTo: 'Nous avons envoyé un code de vérification à',
@@ -178,7 +196,7 @@ const resources = {
         invalidOrExpired: 'Code invalide ou expiré',
         verifyError: 'Erreur lors de la vérification',
         cannotConnect:
-          'Impossible de se connecter au serveur. Vérifiez votre connexion internet et que le backend est démarré sur {{url}}',
+          'Impossible de joindre le service. Vérifiez votre connexion internet et réessayez.',
       },
       scan: {
         permissionRequiredTitle: 'Permission requise',
@@ -444,8 +462,8 @@ const resources = {
           rdvCreated: 'Rendez-vous créé avec succès',
         },
         errors: {
-          genericCreate: 'Erreur lors de la création',
-          genericCreateRdv: 'Erreur lors de la création du rendez-vous',
+          genericCreate: "Impossible d'ajouter la voiture pour le moment. Réessayez plus tard.",
+          genericCreateRdv: 'Impossible de créer le rendez-vous pour le moment. Réessayez plus tard.',
           openGallery: "Impossible d'ouvrir la galerie.",
           openCamera: "Impossible d'ouvrir la caméra.",
           someFilesTooLarge: 'Certains fichiers dépassent 5MB. Veuillez réduire leur taille.',
@@ -628,11 +646,24 @@ const resources = {
         activationBody:
           'Your account has not been activated by the administrator yet. Please wait until it is activated.',
         activationOk: 'Got it',
-        serverError: 'Server error ({{status}}). Make sure the backend is running.',
-        loginError: 'Login failed',
+        serverError: 'Something went wrong. Please try again later.',
+        loginError: 'Invalid credentials or account unavailable. Please try again.',
         connectionError: 'Connection error',
         cannotConnect:
-          'Unable to connect to the server. Check your internet connection and that the backend is running on {{url}}',
+          'Unable to reach the service. Check your internet connection and try again.',
+        adminWebOnlyTitle: 'Administrator area',
+        adminWebOnlyBody:
+          'You cannot access your admin area from the mobile app. Please use the CarSure DZ website:',
+        adminWebOpenSite: 'Open website',
+        verifyEmailTitle: 'Email not confirmed',
+        verifyEmailBody:
+          'Your account exists but this email is not verified yet. Enter the code from your email or request a new one.',
+        resendVerificationEmail: 'Resend code',
+        resendSuccessSent: 'A new verification code was sent to your email.',
+        resendSuccessGeneric:
+          'If an unverified account exists for this email, a code has been sent.',
+        resendFailed: 'Could not send the code. Please try again later.',
+        alreadyVerified: 'This email is already verified. Try signing in.',
       },
       register: {
         title: 'Register',
@@ -647,7 +678,9 @@ const resources = {
         emailPlaceholder: 'email@example.com',
         workshopEmailPlaceholder: 'workshop@email.com',
         phone: 'Phone',
-        phonePlaceholder: '+213 XXX XX XX XX',
+        phonePlaceholder: '0XXXXXXXXX (8–10 digits)',
+        phoneInvalid:
+          'Phone must start with 0, contain only digits, and be 8 to 10 characters long.',
         address: 'Address',
         addressPlaceholder: 'Address',
         passwordLabel: 'Password',
@@ -656,6 +689,9 @@ const resources = {
         workshopNamePlaceholder: 'Workshop name',
         workshopType: 'Workshop type *',
         selectType: 'Select a type',
+        type_mechanic: 'Mechanic',
+        type_paint: 'Body structure inspector',
+        type_both: 'Mechanic + body structure inspector',
         alreadyHaveAccount: 'Already have an account?',
         signIn: 'Sign in',
         back: 'Back',
@@ -666,8 +702,8 @@ const resources = {
           'Your account has been created and your email is verified. Please wait for the admin to activate your account.',
         goToLogin: 'Go to login',
         passwordsNoMatch: 'Passwords do not match',
-        validationError: 'Validation error',
-        registerError: 'Registration error',
+        validationError: 'We could not save your details. Check the form and try again.',
+        registerError: 'Registration could not be completed. Please try again later.',
         verifyTitle: 'Email verification',
         verifyCheckEmail: 'Check your email',
         verifySentTo: 'We sent a verification code to',
@@ -683,7 +719,7 @@ const resources = {
         invalidOrExpired: 'Invalid or expired code',
         verifyError: 'Verification error',
         cannotConnect:
-          'Unable to connect to the server. Check your internet connection and that the backend is running on {{url}}',
+          'Unable to reach the service. Check your internet connection and try again.',
       },
       scan: {
         permissionRequiredTitle: 'Permission required',
@@ -888,8 +924,8 @@ const resources = {
           rdvCreated: 'Appointment created successfully',
         },
         errors: {
-          genericCreate: 'Error while creating',
-          genericCreateRdv: 'Error while creating the appointment',
+          genericCreate: "We couldn't add your car. Please try again later.",
+          genericCreateRdv: "We couldn't create the appointment. Please try again later.",
           openGallery: 'Unable to open gallery.',
           openCamera: 'Unable to open camera.',
           someFilesTooLarge: 'Some files are larger than 5MB. Please reduce their size.',
@@ -1102,11 +1138,24 @@ const resources = {
         activationBody:
           'حسابك لم يتم تفعيله من طرف المسؤول بعد. يرجى الانتظار حتى يتم تفعيل الحساب.',
         activationOk: 'حسناً',
-        serverError: 'خطأ في الخادم ({{status}}). تأكد أن الخلفية تعمل.',
-        loginError: 'فشل تسجيل الدخول',
+        serverError: 'حدث خطأ. يرجى المحاولة لاحقاً.',
+        loginError: 'بيانات الدخول غير صحيحة أو الحساب غير متاح. يرجى المحاولة مرة أخرى.',
         connectionError: 'خطأ في الاتصال',
         cannotConnect:
-          'تعذر الاتصال بالخادم. تحقق من الإنترنت وأن الخلفية تعمل على {{url}}',
+          'تعذر الوصول إلى الخدمة. تحقق من اتصال الإنترنت وحاول مرة أخرى.',
+        adminWebOnlyTitle: 'لوحة المسؤول',
+        adminWebOnlyBody:
+          'لا يمكنك الوصول إلى لوحة المسؤول من تطبيق الجوال. استخدم موقع CarSure DZ:',
+        adminWebOpenSite: 'فتح الموقع',
+        verifyEmailTitle: 'البريد غير مؤكد',
+        verifyEmailBody:
+          'الحساب موجود لكن البريد الإلكتروني غير مؤكد بعد. أدخل الرمز المرسل إلى بريدك أو اطلب إرسالاً جديداً.',
+        resendVerificationEmail: 'إعادة إرسال الرمز',
+        resendSuccessSent: 'تم إرسال رمز تحقق جديد إلى بريدك الإلكتروني.',
+        resendSuccessGeneric:
+          'إذا كان هناك حساب غير مؤكد لهذا البريد، فقد أُرسل رمز.',
+        resendFailed: 'تعذر إرسال الرمز. حاول لاحقاً.',
+        alreadyVerified: 'هذا البريد مؤكد بالفعل. جرّب تسجيل الدخول.',
       },
       register: {
         title: 'إنشاء حساب',
@@ -1121,7 +1170,9 @@ const resources = {
         emailPlaceholder: 'email@example.com',
         workshopEmailPlaceholder: 'workshop@email.com',
         phone: 'الهاتف',
-        phonePlaceholder: '+213 XXX XX XX XX',
+        phonePlaceholder: '0XXXXXXXXX (8-10 أرقام)',
+        phoneInvalid:
+          'يجب أن يبدأ الرقم بـ 0 وأن يحتوي على أرقام فقط وبطول 8 إلى 10 أرقام.',
         address: 'العنوان',
         addressPlaceholder: 'العنوان',
         passwordLabel: 'كلمة المرور',
@@ -1130,6 +1181,9 @@ const resources = {
         workshopNamePlaceholder: 'اسم الورشة',
         workshopType: 'نوع الورشة *',
         selectType: 'اختر نوعاً',
+        type_mechanic: 'ميكانيكي',
+        type_paint: 'فاحص هيكل السيارة',
+        type_both: 'ميكانيكي + فاحص هيكل السيارة',
         alreadyHaveAccount: 'لديك حساب بالفعل؟',
         signIn: 'تسجيل الدخول',
         back: 'رجوع',
@@ -1140,8 +1194,8 @@ const resources = {
           'تم إنشاء حسابك وتم تأكيد بريدك الإلكتروني. يرجى انتظار المسؤول لتفعيل الحساب.',
         goToLogin: 'الذهاب إلى تسجيل الدخول',
         passwordsNoMatch: 'كلمتا المرور غير متطابقتين',
-        validationError: 'خطأ في التحقق',
-        registerError: 'خطأ أثناء التسجيل',
+        validationError: 'تعذر حفظ المعلومات. راجع النموذج وحاول مرة أخرى.',
+        registerError: 'تعذر إكمال التسجيل. يرجى المحاولة لاحقاً.',
         verifyTitle: 'تأكيد البريد الإلكتروني',
         verifyCheckEmail: 'تحقق من بريدك الإلكتروني',
         verifySentTo: 'لقد أرسلنا رمز التحقق إلى',
@@ -1157,7 +1211,7 @@ const resources = {
         invalidOrExpired: 'رمز غير صالح أو منتهي',
         verifyError: 'خطأ أثناء التحقق',
         cannotConnect:
-          'تعذر الاتصال بالخادم. تحقق من الإنترنت وأن الخلفية تعمل على {{url}}',
+          'تعذر الوصول إلى الخدمة. تحقق من اتصال الإنترنت وحاول مرة أخرى.',
       },
       scan: {
         permissionRequiredTitle: 'إذن مطلوب',
@@ -1362,8 +1416,8 @@ const resources = {
           rdvCreated: 'تم إنشاء الموعد بنجاح',
         },
         errors: {
-          genericCreate: 'حدث خطأ أثناء الإنشاء',
-          genericCreateRdv: 'حدث خطأ أثناء إنشاء الموعد',
+          genericCreate: 'تعذر إضافة السيارة حالياً. يرجى المحاولة لاحقاً.',
+          genericCreateRdv: 'تعذر إنشاء الموعد حالياً. يرجى المحاولة لاحقاً.',
           openGallery: 'تعذر فتح المعرض.',
           openCamera: 'تعذر فتح الكاميرا.',
           someFilesTooLarge: 'بعض الملفات أكبر من 5MB. يرجى تقليل حجمها.',

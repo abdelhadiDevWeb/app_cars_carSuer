@@ -23,11 +23,22 @@ import { useTranslation } from 'react-i18next';
 const padding = getPadding();
 const fontSizes = getFontSizes();
 
+/** Digits only, must start with 0, max 10 characters (e.g. 0XXXXXXXXX). */
+function sanitizeRegisterPhoneInput(text: string): string {
+  const digits = text.replace(/\D/g, '');
+  if (digits.length === 0) return '';
+  if (digits[0] !== '0') return '';
+  return digits.slice(0, 10);
+}
+
+const REGISTER_PHONE_PATTERN = /^0\d{7,9}$/;
+
 type RegisterType = 'client' | 'workshop' | null;
+type WorkshopAccountType = 'mechanic' | 'paint_vehicle' | 'mechanic_paint_inspector';
 
 export default function RegisterPage() {
   const router = useRouter();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [registerAs, setRegisterAs] = useState<RegisterType>(null);
   const [showVerification, setShowVerification] = useState(false);
   const [verificationEmail, setVerificationEmail] = useState('');
@@ -61,6 +72,16 @@ export default function RegisterPage() {
 
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+
+  const workshopTypeOptions: { value: WorkshopAccountType; label: string }[] = [
+    { value: 'mechanic', label: t('register.type_mechanic') },
+    { value: 'paint_vehicle', label: t('register.type_paint') },
+    { value: 'mechanic_paint_inspector', label: t('register.type_both') },
+  ];
+
+  const selectedWorkshopTypeLabel =
+    workshopTypeOptions.find((opt) => opt.value === workshopData.type)?.label ||
+    t('register.selectType');
 
   // Use refs to prevent animation re-triggering on re-renders
   const hasAnimatedTypeSelector = useRef(false);
@@ -101,13 +122,15 @@ export default function RegisterPage() {
   }, [showVerification]); // Only depend on showVerification, not timeLeft
 
   const handleUserChange = (field: string, value: string) => {
-    setUserData({ ...userData, [field]: value });
+    const nextValue = field === 'phone' ? sanitizeRegisterPhoneInput(value) : value;
+    setUserData({ ...userData, [field]: nextValue });
     if (formError) setFormError('');
     if (formErrors.length > 0) setFormErrors([]);
   };
 
   const handleWorkshopChange = (field: string, value: string) => {
-    setWorkshopData({ ...workshopData, [field]: value });
+    const nextValue = field === 'phone' ? sanitizeRegisterPhoneInput(value) : value;
+    setWorkshopData({ ...workshopData, [field]: nextValue });
     if (formError) setFormError('');
     if (formErrors.length > 0) setFormErrors([]);
   };
@@ -120,6 +143,12 @@ export default function RegisterPage() {
     if (registerAs === 'client') {
       if (userData.password !== userData.confirmPassword) {
         setFormError(t('register.passwordsNoMatch'));
+        setIsSubmitting(false);
+        return;
+      }
+      const phoneTrimmed = userData.phone.trim();
+      if (!REGISTER_PHONE_PATTERN.test(phoneTrimmed)) {
+        setFormError(t('register.phoneInvalid'));
         setIsSubmitting(false);
         return;
       }
@@ -141,19 +170,14 @@ export default function RegisterPage() {
         } catch (jsonError) {
           // If response is not JSON, it's likely a network/server error
           console.error('Failed to parse JSON response:', jsonError);
-          setFormError(t('login.serverError', { status: response.status }));
+          setFormError(t('login.serverError'));
           setIsSubmitting(false);
           return;
         }
 
         if (!response.ok) {
-          if (data?.errors && Array.isArray(data.errors) && data.errors.length > 0) {
-            setFormErrors(data.errors);
-            setFormError(data?.message || t('register.validationError'));
-          } else {
-            setFormError(data?.message || t('register.registerError'));
-            setFormErrors([]);
-          }
+          setFormErrors([]);
+          setFormError(t('register.registerError'));
           setIsSubmitting(false);
           return;
         }
@@ -170,19 +194,11 @@ export default function RegisterPage() {
         setTimeLeft(15 * 60);
         setVerificationCode('');
         setCodeError('');
+        setIsSubmitting(false);
         setShowVerification(true);
-      } catch (error: any) {
+      } catch (error: unknown) {
         console.error('Register User Error:', error);
-        const errorMessage = error?.message || t('login.connectionError');
-        if (errorMessage.includes('fetch') || errorMessage.includes('network') || errorMessage.includes('Failed to connect') || errorMessage.includes('Impossible de se connecter')) {
-          setFormError(
-            t('register.cannotConnect', {
-              url: process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:8001',
-            })
-          );
-        } else {
-          setFormError(errorMessage);
-        }
+        setFormError(t('register.cannotConnect'));
         setIsSubmitting(false);
       }
     }
@@ -190,6 +206,12 @@ export default function RegisterPage() {
     if (registerAs === 'workshop') {
       if (workshopData.password !== workshopData.confirmPassword) {
         setFormError(t('register.passwordsNoMatch'));
+        setIsSubmitting(false);
+        return;
+      }
+      const workshopPhoneTrimmed = workshopData.phone.trim();
+      if (!REGISTER_PHONE_PATTERN.test(workshopPhoneTrimmed)) {
+        setFormError(t('register.phoneInvalid'));
         setIsSubmitting(false);
         return;
       }
@@ -212,19 +234,14 @@ export default function RegisterPage() {
         } catch (jsonError) {
           // If response is not JSON, it's likely a network/server error
           console.error('Failed to parse JSON response:', jsonError);
-          setFormError(t('login.serverError', { status: response.status }));
+          setFormError(t('login.serverError'));
           setIsSubmitting(false);
           return;
         }
 
         if (!response.ok) {
-          if (data?.errors && Array.isArray(data.errors) && data.errors.length > 0) {
-            setFormErrors(data.errors);
-            setFormError(data?.message || t('register.validationError'));
-          } else {
-            setFormError(data?.message || t('register.registerError'));
-            setFormErrors([]);
-          }
+          setFormErrors([]);
+          setFormError(t('register.registerError'));
           setIsSubmitting(false);
           return;
         }
@@ -242,19 +259,11 @@ export default function RegisterPage() {
         setTimeLeft(15 * 60);
         setVerificationCode('');
         setCodeError('');
+        setIsSubmitting(false);
         setShowVerification(true);
-      } catch (error: any) {
+      } catch (error: unknown) {
         console.error('Register Workshop Error:', error);
-        const errorMessage = error?.message || t('login.connectionError');
-        if (errorMessage.includes('fetch') || errorMessage.includes('network') || errorMessage.includes('Failed to connect') || errorMessage.includes('Impossible de se connecter')) {
-          setFormError(
-            t('register.cannotConnect', {
-              url: process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:8001',
-            })
-          );
-        } else {
-          setFormError(errorMessage);
-        }
+        setFormError(t('register.cannotConnect'));
         setIsSubmitting(false);
       }
     }
@@ -292,13 +301,13 @@ export default function RegisterPage() {
         data = await response.json();
       } catch (jsonError) {
         console.error('Failed to parse JSON response:', jsonError);
-        setCodeError(t('login.serverError', { status: response.status }));
+        setCodeError(t('login.serverError'));
         setIsVerifying(false);
         return;
       }
 
       if (!response.ok) {
-        setCodeError(data?.message || t('register.invalidOrExpired'));
+        setCodeError(t('register.invalidOrExpired'));
         setIsVerifying(false);
         return;
       }
@@ -309,21 +318,12 @@ export default function RegisterPage() {
         setShowSuccessModal(true);
         setIsVerifying(false);
       } else {
-        setCodeError(data?.message || t('register.verifyError'));
+        setCodeError(t('register.verifyError'));
         setIsVerifying(false);
       }
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('Verify Email Error:', error);
-      const errorMessage = error?.message || t('login.connectionError');
-      if (errorMessage.includes('fetch') || errorMessage.includes('network') || errorMessage.includes('Failed to connect') || errorMessage.includes('Impossible de se connecter')) {
-        setCodeError(
-          t('register.cannotConnect', {
-            url: process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:8001',
-          })
-        );
-      } else {
-        setCodeError(errorMessage);
-      }
+      setCodeError(t('register.cannotConnect'));
       setIsVerifying(false);
     }
   };
@@ -635,8 +635,11 @@ export default function RegisterPage() {
                           placeholder={t('register.phonePlaceholder')}
                           placeholderTextColor="#9ca3af"
                           value={userData.phone}
-                          onChangeText={(text) => handleUserChange('phone', text)}
-                          keyboardType="phone-pad"
+                          onChangeText={(text) =>
+                            handleUserChange('phone', sanitizeRegisterPhoneInput(text))
+                          }
+                          keyboardType="number-pad"
+                          maxLength={10}
                         />
                       </View>
 
@@ -707,10 +710,33 @@ export default function RegisterPage() {
                         <ThemedText style={styles.label}>{t('register.workshopType')}</ThemedText>
                         <View style={styles.selectContainer}>
                           <ThemedText style={styles.selectText}>
-                            {workshopData.type || t('register.selectType')}
+                            {selectedWorkshopTypeLabel}
                           </ThemedText>
                         </View>
-                        {/* TODO: Add Picker component for type selection */}
+                        <View key={`workshop-type-${i18n.language}`} style={styles.workshopTypeOptions}>
+                          {workshopTypeOptions.map((option) => {
+                            const isActive = workshopData.type === option.value;
+                            return (
+                              <TouchableOpacity
+                                key={`${option.value}-${i18n.language}`}
+                                onPress={() => handleWorkshopChange('type', option.value)}
+                                style={[
+                                  styles.workshopTypeOption,
+                                  isActive && styles.workshopTypeOptionActive,
+                                ]}
+                              >
+                                <ThemedText
+                                  style={[
+                                    styles.workshopTypeOptionText,
+                                    isActive && styles.workshopTypeOptionTextActive,
+                                  ]}
+                                >
+                                  {option.label}
+                                </ThemedText>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
                       </View>
 
                       <View style={styles.inputContainer}>
@@ -744,8 +770,11 @@ export default function RegisterPage() {
                           placeholder={t('register.phonePlaceholder')}
                           placeholderTextColor="#9ca3af"
                           value={workshopData.phone}
-                          onChangeText={(text) => handleWorkshopChange('phone', text)}
-                          keyboardType="phone-pad"
+                          onChangeText={(text) =>
+                            handleWorkshopChange('phone', sanitizeRegisterPhoneInput(text))
+                          }
+                          keyboardType="number-pad"
+                          maxLength={10}
                         />
                       </View>
 
@@ -835,7 +864,7 @@ export default function RegisterPage() {
 
             {/* Back Button */}
             <TouchableOpacity
-              onPress={() => router.back()}
+              onPress={() => router.replace('/(tabs)')}
               style={styles.backButton}
             >
               <IconSymbol name="chevron.left" size={16} color="#6b7280" />
@@ -1130,6 +1159,32 @@ const styles = StyleSheet.create({
   selectText: {
     fontSize: 16,
     color: '#1f2937',
+  },
+  workshopTypeOptions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 10,
+  },
+  workshopTypeOption: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: '#d1d5db',
+    backgroundColor: '#f9fafb',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  workshopTypeOptionActive: {
+    borderColor: '#0d9488',
+    backgroundColor: '#ccfbf1',
+  },
+  workshopTypeOptionText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#4b5563',
+  },
+  workshopTypeOptionTextActive: {
+    color: '#0f766e',
   },
   submitButton: {
     borderRadius: scale(12),
