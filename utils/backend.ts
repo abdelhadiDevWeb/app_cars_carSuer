@@ -64,17 +64,40 @@ export function getImageUrl(imagePath: string): string | null {
   if (!imagePath || imagePath.trim() === '') {
     return null;
   }
-  
+
+  const trimmed = imagePath.trim();
+
+  // QR codes (and similar) are often stored as data URLs from the server (e.g. qrcode.toDataURL).
+  if (trimmed.startsWith('data:')) {
+    return trimmed;
+  }
+
   // If already a full URL, return as is
-  if (imagePath.startsWith('http://') || imagePath.startsWith('https://')) {
-    return imagePath;
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    return trimmed;
   }
   
   // If it starts with /, it's already a path
-  const cleanPath = imagePath.startsWith('/') ? imagePath : `/${imagePath}`;
+  const cleanPath = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
   
   // Combine with backend URL
   return `${getBackendUrl()}${cleanPath}`;
+}
+
+/**
+ * Read response body as JSON when possible (handles HTML error pages from proxies / old deployments).
+ */
+export async function readResponseJson(response: Response): Promise<{
+  data: Record<string, unknown>;
+  rawText: string;
+}> {
+  const rawText = await response.text();
+  try {
+    const data = JSON.parse(rawText) as Record<string, unknown>;
+    return { data, rawText };
+  } catch {
+    return { data: {}, rawText };
+  }
 }
 
 /**

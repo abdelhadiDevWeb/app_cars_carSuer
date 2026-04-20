@@ -48,8 +48,12 @@ export default function LoginPage() {
   const [verifyAccountType, setVerifyAccountType] = useState<'user' | 'workshop'>('user');
   const [verifyCode, setVerifyCode] = useState('');
   const [verifyModalError, setVerifyModalError] = useState('');
+  /** Server message or warning when email could not be sent (same idea as web: still show code entry). */
+  const [verifyInfoBanner, setVerifyInfoBanner] = useState<string | null>(null);
   const [isResending, setIsResending] = useState(false);
   const [isVerifyingCode, setIsVerifyingCode] = useState(false);
+  const [showEmailConfirmedModal, setShowEmailConfirmedModal] = useState(false);
+  const [confirmedEmailHasAccess, setConfirmedEmailHasAccess] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -67,6 +71,98 @@ export default function LoginPage() {
       cancelled = true;
     };
   }, []);
+
+  /** After successful email verification, log in and show the same “email confirmed” step as web. */
+  const completeLoginAfterEmailVerification = async (loginEmail: string, loginPassword: string) => {
+    try {
+      const response = await apiRequest('/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ email: loginEmail.trim(), password: loginPassword }),
+      });
+
+      let data: Record<string, unknown>;
+      try {
+        data = await response.json();
+      } catch {
+        setError(t('login.serverError'));
+        return;
+      }
+
+      if (!response.ok) {
+        if (data.needsActivation && data.status === false) {
+          setConfirmedEmailHasAccess(false);
+          setShowEmailConfirmedModal(true);
+          return;
+        }
+        setError(
+          typeof data.message === 'string' && data.message.trim() !== ''
+            ? data.message
+            : t('login.loginError'),
+        );
+        return;
+      }
+
+      if (data.token && data.user) {
+        const isAdmin = data.type === 'user' && data.role === 'admin';
+        if (isAdmin) {
+          setShowAdminWebModal(true);
+          return;
+        }
+
+        await login(data.token as string, {
+          _id: (data.user as { _id?: string; id?: string })._id || (data.user as { id?: string }).id,
+          email: (data.user as { email: string }).email,
+          firstName: (data.user as { firstName?: string }).firstName,
+          lastName: (data.user as { lastName?: string }).lastName,
+          type: data.type as string,
+          role: data.role as string,
+        });
+
+        const isSellerClient = data.type === 'user' && data.role !== 'admin';
+        if (isSellerClient) {
+          try {
+            const res = await apiRequest('/abonnement/my-subscription');
+            if (res.status === 401) {
+              return;
+            }
+            if (!res.ok) {
+              setConfirmedEmailHasAccess(true);
+              setShowEmailConfirmedModal(true);
+              return;
+            }
+            const subData = await res.json().catch(() => null);
+            const now = Date.now();
+            const isExpired =
+              !subData?.ok ||
+              !subData?.hasSubscription ||
+              !subData?.subscription?.date_end ||
+              new Date(subData.subscription.date_end).getTime() < now;
+
+            if (isExpired) {
+              setShowExpiredModal(true);
+              try {
+                await apiRequest('/auth/profile', {
+                  method: 'PUT',
+                  body: JSON.stringify({ status: false }),
+                });
+              } catch {}
+              try {
+                await apiRequest('/abonnement/deactivate', { method: 'POST' });
+              } catch {}
+              return;
+            }
+          } catch {
+            // Network etc. — treat as OK for opening success modal
+          }
+        }
+
+        setConfirmedEmailHasAccess(true);
+        setShowEmailConfirmedModal(true);
+      }
+    } catch {
+      setError(t('login.cannotConnect'));
+    }
+  };
 
   const submitLoginWithCredentials = async (loginEmail: string, loginPassword: string) => {
     setIsLoading(true);
@@ -90,10 +186,25 @@ export default function LoginPage() {
 
       if (!response.ok) {
         if (data.needsVerification) {
+          // Same as web: always open the confirmation modal (even if the email failed to send).
+          const sent =
+            data.verificationEmailSent !== false && data.verificationEmailSent !== 'false';
+          const apiMsg = typeof data.message === 'string' ? data.message.trim() : '';
+          const devCode =
+            typeof data.verificationCode === 'string' ? data.verificationCode : '';
           setPendingVerifyEmail(loginEmail.trim());
           setVerifyAccountType(data.accountType === 'workshop' ? 'workshop' : 'user');
           setVerifyCode('');
           setVerifyModalError('');
+          if (!sent) {
+            setVerifyInfoBanner(
+              devCode
+                ? `${apiMsg || t('login.verificationEmailNotSent')} (${t('login.devCodeHint')}: ${devCode})`
+                : apiMsg || t('login.verificationEmailNotSent'),
+            );
+          } else {
+            setVerifyInfoBanner(null);
+          }
           setShowVerifyEmailModal(true);
           setIsLoading(false);
           return;
@@ -205,18 +316,31 @@ export default function LoginPage() {
         setIsResending(false);
         return;
       }
-      if (!response.ok) {
-        setVerifyModalError(t('login.resendFailed'));
+      if (!response.ok || data.ok !== true) {
+        setVerifyModalError(
+          typeof data.message === 'string' && data.message.trim() !== ''
+            ? data.message
+            : t('login.resendFailed'),
+        );
         setIsResending(false);
         return;
       }
       if (data.sent === true) {
         Alert.alert('', t('login.resendSuccessSent'));
+        setVerifyInfoBanner(null);
       } else {
-        Alert.alert('', t('login.resendSuccessGeneric'));
+        const devCode =
+          typeof (data as { verificationCode?: string }).verificationCode === 'string'
+            ? (data as { verificationCode: string }).verificationCode
+            : '';
+        setVerifyModalError(
+          devCode
+            ? `${t('login.resendFailed')} (${t('login.devCodeHint')}: ${devCode})`
+            : t('login.resendFailed'),
+        );
       }
     } catch {
-      setVerifyModalError(t('login.resendFailed'));
+      setVerifyModalError(t('login.cannotConnect'));
     } finally {
       setIsResending(false);
     }
@@ -240,16 +364,21 @@ export default function LoginPage() {
           type: typeForApi,
         }),
       });
-      await response.json().catch(() => ({}));
-      if (!response.ok) {
-        setVerifyModalError(t('register.invalidOrExpired'));
+      const data = await response.json().catch(() => ({} as Record<string, unknown>));
+      if (!response.ok || data.ok !== true) {
+        const msg =
+          typeof data.message === 'string' && data.message.trim() !== ''
+            ? data.message
+            : t('register.invalidOrExpired');
+        setVerifyModalError(msg);
         setIsVerifyingCode(false);
         return;
       }
       setShowVerifyEmailModal(false);
       setVerifyCode('');
       setVerifyModalError('');
-      await submitLoginWithCredentials(pendingVerifyEmail.trim(), password);
+      setVerifyInfoBanner(null);
+      await completeLoginAfterEmailVerification(pendingVerifyEmail.trim(), password);
     } catch {
       setVerifyModalError(t('register.invalidOrExpired'));
     } finally {
@@ -375,7 +504,7 @@ export default function LoginPage() {
 
                   {/* Forgot Password */}
                   <View style={styles.forgotPasswordContainer}>
-                    <TouchableOpacity>
+                    <TouchableOpacity onPress={() => router.push('/forgot-password')}>
                       <ThemedText style={styles.forgotPasswordText}>
                         {t('login.forgotPassword')}
                       </ThemedText>
@@ -465,7 +594,7 @@ export default function LoginPage() {
         </View>
       )}
 
-      {/* Email not verified — code + resend */}
+      {/* Email not verified — same flow as web: code + resend + optional server message */}
       {showVerifyEmailModal && (
         <View style={styles.modalOverlay}>
           <View key={i18n.language} style={[styles.modalContent, styles.verifyModalContent]}>
@@ -476,17 +605,23 @@ export default function LoginPage() {
             >
               <LinearGradient
                 colors={['rgba(255, 255, 255, 0.98)', 'rgba(255, 255, 255, 0.95)']}
-                style={styles.modalBlur}
+                style={styles.verifyModalInner}
               >
-                <View style={styles.modalIconContainer}>
-                  <IconSymbol name="envelope.fill" size={48} color="#f59e0b" />
+                <View style={styles.verifyBlueIconWrap}>
+                  <IconSymbol name="envelope.fill" size={scale(28)} color="#2563eb" />
                 </View>
-                <ThemedText style={styles.modalTitle}>{t('login.verifyEmailTitle')}</ThemedText>
-                <ThemedText style={styles.modalText}>{t('login.verifyEmailBody')}</ThemedText>
+                <ThemedText style={styles.verifyModalTitle}>{t('login.confirmEmailTitle')}</ThemedText>
+                <ThemedText style={styles.verifyModalSubtitle}>{t('login.confirmEmailSubtitle')}</ThemedText>
                 <ThemedText style={styles.verifyModalEmail}>{pendingVerifyEmail}</ThemedText>
 
+                {verifyInfoBanner ? (
+                  <View style={styles.verifyInfoBanner}>
+                    <ThemedText style={styles.verifyInfoBannerText}>{verifyInfoBanner}</ThemedText>
+                  </View>
+                ) : null}
+
                 <View style={styles.verifyModalField}>
-                  <ThemedText style={styles.verifyModalLabel}>{t('register.verifyCodeLabel')}</ThemedText>
+                  <ThemedText style={styles.verifyModalLabel}>{t('login.confirmationCodeLabel')}</ThemedText>
                   <TextInput
                     style={styles.verifyModalInput}
                     placeholder={t('register.verifyCodePlaceholder')}
@@ -502,22 +637,32 @@ export default function LoginPage() {
                 </View>
 
                 {verifyModalError ? (
-                  <ThemedText style={styles.verifyModalError}>{verifyModalError}</ThemedText>
+                  <View style={styles.verifyModalErrorBox}>
+                    <ThemedText style={styles.verifyModalError}>{verifyModalError}</ThemedText>
+                  </View>
                 ) : null}
 
                 <TouchableOpacity
                   onPress={handleConfirmVerifyCode}
-                  disabled={isVerifyingCode || verifyCode.length !== 6}
-                  style={[styles.modalButton, styles.verifyModalPrimaryMargin]}
+                  disabled={isVerifyingCode || verifyCode.replace(/\D/g, '').length !== 6}
+                  style={[
+                    styles.modalButton,
+                    styles.verifyModalPrimaryMargin,
+                    (isVerifyingCode || verifyCode.replace(/\D/g, '').length !== 6) &&
+                      styles.modalButtonDisabled,
+                  ]}
                 >
                   <LinearGradient
-                    colors={['#0d9488', '#14b8a6']}
-                    style={styles.modalButtonGradient}
+                    colors={['#14b8a6', '#0d9488']}
+                    style={[styles.modalButtonGradient, isVerifyingCode && styles.modalButtonGradientRow]}
                   >
                     {isVerifyingCode ? (
-                      <ActivityIndicator color="#ffffff" />
+                      <>
+                        <ActivityIndicator color="#ffffff" />
+                        <ThemedText style={styles.modalButtonText}>{t('login.verifyingCode')}</ThemedText>
+                      </>
                     ) : (
-                      <ThemedText style={styles.modalButtonText}>{t('register.verify')}</ThemedText>
+                      <ThemedText style={styles.modalButtonText}>{t('login.confirmCodeButton')}</ThemedText>
                     )}
                   </LinearGradient>
                 </TouchableOpacity>
@@ -525,20 +670,15 @@ export default function LoginPage() {
                 <TouchableOpacity
                   onPress={handleResendVerification}
                   disabled={isResending}
-                  style={[styles.modalButton, { marginBottom: 10 }]}
+                  style={[styles.resendCodeButton, isResending && styles.modalButtonDisabled]}
                 >
-                  <LinearGradient
-                    colors={['#64748b', '#475569']}
-                    style={styles.modalButtonGradient}
-                  >
-                    {isResending ? (
-                      <ActivityIndicator color="#ffffff" />
-                    ) : (
-                      <ThemedText style={styles.modalButtonText}>
-                        {t('login.resendVerificationEmail')}
-                      </ThemedText>
-                    )}
-                  </LinearGradient>
+                  {isResending ? (
+                    <ActivityIndicator color="#374151" />
+                  ) : (
+                    <ThemedText style={styles.resendCodeButtonText}>
+                      {t('login.resendVerificationEmail')}
+                    </ThemedText>
+                  )}
                 </TouchableOpacity>
 
                 <TouchableOpacity
@@ -546,6 +686,7 @@ export default function LoginPage() {
                     setShowVerifyEmailModal(false);
                     setVerifyCode('');
                     setVerifyModalError('');
+                    setVerifyInfoBanner(null);
                   }}
                   style={styles.modalButton}
                 >
@@ -553,6 +694,59 @@ export default function LoginPage() {
                 </TouchableOpacity>
               </LinearGradient>
             </ScrollView>
+          </View>
+        </View>
+      )}
+
+      {/* Email confirmed — second step like web */}
+      {showEmailConfirmedModal && (
+        <View style={styles.modalOverlay}>
+          <View key={`confirmed-${i18n.language}`} style={styles.modalContent}>
+            <LinearGradient
+              colors={['rgba(255, 255, 255, 0.98)', 'rgba(255, 255, 255, 0.95)']}
+              style={styles.modalBlur}
+            >
+              <View
+                style={[
+                  styles.emailConfirmedIconWrap,
+                  confirmedEmailHasAccess ? styles.emailConfirmedIconOk : styles.emailConfirmedIconWarn,
+                ]}
+              >
+                <IconSymbol
+                  name={confirmedEmailHasAccess ? 'checkmark.circle.fill' : 'exclamationmark.triangle.fill'}
+                  size={scale(36)}
+                  color={confirmedEmailHasAccess ? '#16a34a' : '#ca8a04'}
+                />
+              </View>
+              <ThemedText style={styles.modalTitle}>{t('login.emailConfirmedTitle')}</ThemedText>
+              <ThemedText style={styles.modalText}>
+                {confirmedEmailHasAccess
+                  ? t('login.emailConfirmedBodyHasAccess')
+                  : t('login.emailConfirmedBodyNoAccess')}
+              </ThemedText>
+              {confirmedEmailHasAccess ? (
+                <TouchableOpacity
+                  onPress={() => {
+                    setShowEmailConfirmedModal(false);
+                    router.replace('/(tabs)');
+                  }}
+                  style={styles.modalButton}
+                >
+                  <LinearGradient colors={['#14b8a6', '#0d9488']} style={styles.modalButtonGradient}>
+                    <ThemedText style={styles.modalButtonText}>{t('login.goToMySpace')}</ThemedText>
+                  </LinearGradient>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity
+                  onPress={() => setShowEmailConfirmedModal(false)}
+                  style={styles.modalButton}
+                >
+                  <LinearGradient colors={['#64748b', '#475569']} style={styles.modalButtonGradient}>
+                    <ThemedText style={styles.modalButtonText}>{t('login.activationOk')}</ThemedText>
+                  </LinearGradient>
+                </TouchableOpacity>
+              )}
+            </LinearGradient>
           </View>
         </View>
       )}
@@ -974,10 +1168,17 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     width: '100%',
   },
+  modalButtonDisabled: {
+    opacity: 0.5,
+  },
   modalButtonGradient: {
     paddingVertical: 14,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  modalButtonGradientRow: {
+    flexDirection: 'row',
+    gap: scale(10),
   },
   modalButtonText: {
     fontSize: 16,
@@ -989,6 +1190,49 @@ const styles = StyleSheet.create({
   },
   verifyModalScroll: {
     flexGrow: 1,
+  },
+  verifyModalInner: {
+    padding: scale(28),
+    alignItems: 'center',
+    borderRadius: scale(24),
+  },
+  verifyBlueIconWrap: {
+    width: scale(64),
+    height: scale(64),
+    borderRadius: scale(32),
+    backgroundColor: '#dbeafe',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: scale(16),
+  },
+  verifyModalTitle: {
+    fontSize: fontSizes.xl,
+    fontWeight: '800',
+    color: '#111827',
+    textAlign: 'center',
+    marginBottom: scale(8),
+  },
+  verifyModalSubtitle: {
+    fontSize: fontSizes.sm,
+    color: '#6b7280',
+    textAlign: 'center',
+    lineHeight: scale(20),
+    marginBottom: scale(8),
+    paddingHorizontal: scale(4),
+  },
+  verifyInfoBanner: {
+    width: '100%',
+    backgroundColor: '#fffbeb',
+    borderWidth: 1,
+    borderColor: '#fde68a',
+    borderRadius: scale(12),
+    padding: scale(12),
+    marginBottom: scale(12),
+  },
+  verifyInfoBannerText: {
+    fontSize: fontSizes.sm,
+    color: '#92400e',
+    lineHeight: scale(20),
   },
   verifyModalEmail: {
     fontSize: 15,
@@ -1024,13 +1268,49 @@ const styles = StyleSheet.create({
   },
   verifyModalError: {
     fontSize: 14,
-    color: '#ef4444',
+    color: '#b91c1c',
     textAlign: 'center',
-    marginBottom: 12,
     width: '100%',
+  },
+  verifyModalErrorBox: {
+    width: '100%',
+    backgroundColor: '#fef2f2',
+    borderWidth: 1,
+    borderColor: '#fecaca',
+    borderRadius: scale(12),
+    padding: scale(12),
+    marginBottom: scale(12),
   },
   verifyModalPrimaryMargin: {
     marginBottom: 10,
+  },
+  resendCodeButton: {
+    width: '100%',
+    paddingVertical: scale(14),
+    borderRadius: scale(12),
+    backgroundColor: '#f3f4f6',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: scale(10),
+  },
+  resendCodeButtonText: {
+    fontSize: fontSizes.md,
+    fontWeight: '700',
+    color: '#374151',
+  },
+  emailConfirmedIconWrap: {
+    width: scale(80),
+    height: scale(80),
+    borderRadius: scale(40),
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: scale(20),
+  },
+  emailConfirmedIconOk: {
+    backgroundColor: '#dcfce7',
+  },
+  emailConfirmedIconWarn: {
+    backgroundColor: '#fef9c3',
   },
   verifyModalDismiss: {
     fontSize: 16,

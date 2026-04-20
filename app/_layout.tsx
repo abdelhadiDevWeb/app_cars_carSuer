@@ -65,7 +65,10 @@ function NavigationHandler() {
 
     try {
     const inSplashGroup = segments[0] === 'splash';
-    const inAuthGroup = segments[0] === 'login' || segments[0] === 'register';
+    const inAuthGroup =
+      segments[0] === 'login' ||
+      segments[0] === 'register' ||
+      segments[0] === 'forgot-password';
     const inTabsGroup = segments[0] === '(tabs)';
     const inPublicCarDetails = segments[0] === 'car';
 
@@ -236,6 +239,7 @@ export default function RootLayout() {
                   <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
                   <Stack.Screen name="login" options={{ headerShown: false }} />
                   <Stack.Screen name="register" options={{ headerShown: false }} />
+                  <Stack.Screen name="forgot-password" options={{ headerShown: false }} />
                   <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
                 </Stack>
                 <NotificationBanner />
