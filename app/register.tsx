@@ -33,13 +33,12 @@ function sanitizeRegisterPhoneInput(text: string): string {
 
 const REGISTER_PHONE_PATTERN = /^0\d{7,9}$/;
 
-type RegisterType = 'client' | 'workshop' | null;
-type WorkshopAccountType = 'mechanic' | 'paint_vehicle' | 'mechanic_paint_inspector';
+type RegisterType = 'client';
 
 export default function RegisterPage() {
   const router = useRouter();
-  const { t, i18n } = useTranslation();
-  const [registerAs, setRegisterAs] = useState<RegisterType>(null);
+  const { t } = useTranslation();
+  const registerAs: RegisterType = 'client';
   const [showVerification, setShowVerification] = useState(false);
   const [verificationEmail, setVerificationEmail] = useState('');
   const [verificationCode, setVerificationCode] = useState('');
@@ -60,43 +59,12 @@ export default function RegisterPage() {
     confirmPassword: '',
   });
 
-  const [workshopData, setWorkshopData] = useState({
-    name: '',
-    email: '',
-    adr: '',
-    phone: '',
-    type: '',
-    password: '',
-    confirmPassword: '',
-  });
-
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
-  const workshopTypeOptions: { value: WorkshopAccountType; label: string }[] = [
-    { value: 'mechanic', label: t('register.type_mechanic') },
-    { value: 'paint_vehicle', label: t('register.type_paint') },
-    { value: 'mechanic_paint_inspector', label: t('register.type_both') },
-  ];
-
-  const selectedWorkshopTypeLabel =
-    workshopTypeOptions.find((opt) => opt.value === workshopData.type)?.label ||
-    t('register.selectType');
-
   // Use refs to prevent animation re-triggering on re-renders
-  const hasAnimatedTypeSelector = useRef(false);
   const hasAnimatedForm = useRef(false);
   const hasAnimatedVerification = useRef(false);
-
-  // Reset animation flags when registerAs changes
-  useEffect(() => {
-    if (registerAs) {
-      hasAnimatedForm.current = false;
-    } else {
-      hasAnimatedTypeSelector.current = false;
-      hasAnimatedForm.current = false;
-    }
-  }, [registerAs]);
 
   // Reset verification animation flag when showVerification changes
   useEffect(() => {
@@ -124,13 +92,6 @@ export default function RegisterPage() {
   const handleUserChange = (field: string, value: string) => {
     const nextValue = field === 'phone' ? sanitizeRegisterPhoneInput(value) : value;
     setUserData({ ...userData, [field]: nextValue });
-    if (formError) setFormError('');
-    if (formErrors.length > 0) setFormErrors([]);
-  };
-
-  const handleWorkshopChange = (field: string, value: string) => {
-    const nextValue = field === 'phone' ? sanitizeRegisterPhoneInput(value) : value;
-    setWorkshopData({ ...workshopData, [field]: nextValue });
     if (formError) setFormError('');
     if (formErrors.length > 0) setFormErrors([]);
   };
@@ -203,70 +164,6 @@ export default function RegisterPage() {
       }
     }
 
-    if (registerAs === 'workshop') {
-      if (workshopData.password !== workshopData.confirmPassword) {
-        setFormError(t('register.passwordsNoMatch'));
-        setIsSubmitting(false);
-        return;
-      }
-      const workshopPhoneTrimmed = workshopData.phone.trim();
-      if (!REGISTER_PHONE_PATTERN.test(workshopPhoneTrimmed)) {
-        setFormError(t('register.phoneInvalid'));
-        setIsSubmitting(false);
-        return;
-      }
-      try {
-        const response = await apiRequest('/auth/register/workshop', {
-          method: 'POST',
-          body: JSON.stringify({
-            name: workshopData.name,
-            email: workshopData.email.trim(),
-            adr: workshopData.adr,
-            phone: workshopData.phone.trim(),
-            type: workshopData.type,
-            password: workshopData.password,
-          }),
-        });
-
-        let data;
-        try {
-          data = await response.json();
-        } catch (jsonError) {
-          // If response is not JSON, it's likely a network/server error
-          console.error('Failed to parse JSON response:', jsonError);
-          setFormError(t('login.serverError'));
-          setIsSubmitting(false);
-          return;
-        }
-
-        if (!response.ok) {
-          setFormErrors([]);
-          setFormError(t('register.registerError'));
-          setIsSubmitting(false);
-          return;
-        }
-
-        setVerificationEmail(workshopData.email);
-        setWorkshopData({
-          name: '',
-          email: '',
-          adr: '',
-          phone: '',
-          type: '',
-          password: '',
-          confirmPassword: '',
-        });
-        setTimeLeft(15 * 60);
-        setVerificationCode('');
-        setCodeError('');
-        setIsSubmitting(false);
-        setShowVerification(true);
-      } catch (error: unknown) {
-        console.error('Register Workshop Error:', error);
-        setFormError(t('register.cannotConnect'));
-        setIsSubmitting(false);
-      }
-    }
   };
 
   const handleVerifyEmail = async () => {
@@ -286,7 +183,7 @@ export default function RegisterPage() {
     setCodeError('');
 
     try {
-      const backendType = registerAs === 'client' ? 'user' : registerAs;
+      const backendType = 'user';
       const response = await apiRequest('/auth/verify-email', {
         method: 'POST',
         body: JSON.stringify({
@@ -445,7 +342,6 @@ export default function RegisterPage() {
                         setVerificationCode('');
                         setTimeLeft(15 * 60);
                         setCodeError('');
-                        setRegisterAs(null);
                       }}
                       style={styles.backToRegisterButton}
                     >
@@ -496,78 +392,15 @@ export default function RegisterPage() {
           </View>
 
           <View style={styles.content}>
-            {/* Choose type */}
+            {/* Client Registration Form */}
             <Animated.View
-              key="type-selector"
-              entering={!hasAnimatedTypeSelector.current ? FadeIn.duration(800).delay(200).springify() : undefined}
-              style={styles.typeSelector}
+              key="form-client"
+              entering={!hasAnimatedForm.current ? FadeIn.duration(800).delay(200).springify() : undefined}
+              style={styles.formContainer}
               onLayout={() => {
-                hasAnimatedTypeSelector.current = true;
+                hasAnimatedForm.current = true;
               }}
             >
-              <TouchableOpacity
-                onPress={() => setRegisterAs('workshop')}
-                style={[
-                  styles.typeCard,
-                  registerAs === 'workshop' && styles.typeCardActive,
-                ]}
-                activeOpacity={0.8}
-              >
-                <LinearGradient
-                  colors={
-                    registerAs === 'workshop'
-                      ? ['#3b82f6', '#2563eb']
-                      : ['#e5e7eb', '#d1d5db']
-                  }
-                  style={styles.typeIconContainer}
-                >
-                  <IconSymbol
-                    name="shield.fill"
-                    size={24}
-                    color={registerAs === 'workshop' ? '#ffffff' : '#6b7280'}
-                  />
-                </LinearGradient>
-                <ThemedText style={styles.typeTitle}>{t('register.workshop')}</ThemedText>
-                <ThemedText style={styles.typeSubtitle}>{t('register.workshopSubtitle')}</ThemedText>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                onPress={() => setRegisterAs('client')}
-                style={[
-                  styles.typeCard,
-                  registerAs === 'client' && styles.typeCardActive,
-                ]}
-                activeOpacity={0.8}
-              >
-                <LinearGradient
-                  colors={
-                    registerAs === 'client'
-                      ? ['#0d9488', '#14b8a6']
-                      : ['#e5e7eb', '#d1d5db']
-                  }
-                  style={styles.typeIconContainer}
-                >
-                  <IconSymbol
-                    name="person.fill"
-                    size={24}
-                    color={registerAs === 'client' ? '#ffffff' : '#6b7280'}
-                  />
-                </LinearGradient>
-                <ThemedText style={styles.typeTitle}>{t('register.client')}</ThemedText>
-                <ThemedText style={styles.typeSubtitle}>{t('register.clientSubtitle')}</ThemedText>
-              </TouchableOpacity>
-            </Animated.View>
-
-            {/* Form */}
-            {registerAs && (
-              <Animated.View
-                key={`form-${registerAs}`}
-                entering={!hasAnimatedForm.current ? FadeIn.duration(800).delay(400).springify() : undefined}
-                style={styles.formContainer}
-                onLayout={() => {
-                  hasAnimatedForm.current = true;
-                }}
-              >
                 <LinearGradient
                   colors={['rgba(255, 255, 255, 0.98)', 'rgba(255, 255, 255, 0.95)']}
                   style={styles.formBlur}
@@ -590,8 +423,7 @@ export default function RegisterPage() {
                     </View>
                   ) : null}
 
-                  {registerAs === 'client' ? (
-                    <View style={styles.form}>
+                  <View style={styles.form}>
                       <View style={styles.row}>
                         <View style={[styles.inputContainer, styles.halfInput]}>
                           <ThemedText style={styles.label}>{t('register.firstName')}</ThemedText>
@@ -692,148 +524,12 @@ export default function RegisterPage() {
                           </TouchableOpacity>
                         </View>
                       </View>
-                    </View>
-                  ) : (
-                    <View style={[styles.form, styles.formWithPadding]}>
-                      <View style={styles.inputContainer}>
-                        <ThemedText style={styles.label}>{t('register.workshopName')}</ThemedText>
-                        <TextInput
-                          style={styles.input}
-                          placeholder={t('register.workshopNamePlaceholder')}
-                          placeholderTextColor="#9ca3af"
-                          value={workshopData.name}
-                          onChangeText={(text) => handleWorkshopChange('name', text)}
-                        />
-                      </View>
-
-                      <View style={styles.inputContainer}>
-                        <ThemedText style={styles.label}>{t('register.workshopType')}</ThemedText>
-                        <View style={styles.selectContainer}>
-                          <ThemedText style={styles.selectText}>
-                            {selectedWorkshopTypeLabel}
-                          </ThemedText>
-                        </View>
-                        <View key={`workshop-type-${i18n.language}`} style={styles.workshopTypeOptions}>
-                          {workshopTypeOptions.map((option) => {
-                            const isActive = workshopData.type === option.value;
-                            return (
-                              <TouchableOpacity
-                                key={`${option.value}-${i18n.language}`}
-                                onPress={() => handleWorkshopChange('type', option.value)}
-                                style={[
-                                  styles.workshopTypeOption,
-                                  isActive && styles.workshopTypeOptionActive,
-                                ]}
-                              >
-                                <ThemedText
-                                  style={[
-                                    styles.workshopTypeOptionText,
-                                    isActive && styles.workshopTypeOptionTextActive,
-                                  ]}
-                                >
-                                  {option.label}
-                                </ThemedText>
-                              </TouchableOpacity>
-                            );
-                          })}
-                        </View>
-                      </View>
-
-                      <View style={styles.inputContainer}>
-                        <ThemedText style={styles.label}>{t('register.emailRequired')}</ThemedText>
-                        <TextInput
-                          style={styles.input}
-                          placeholder={t('register.workshopEmailPlaceholder')}
-                          placeholderTextColor="#9ca3af"
-                          value={workshopData.email}
-                          onChangeText={(text) => handleWorkshopChange('email', text)}
-                          keyboardType="email-address"
-                          autoCapitalize="none"
-                        />
-                      </View>
-
-                      <View style={styles.inputContainer}>
-                        <ThemedText style={styles.label}>{t('register.address')}</ThemedText>
-                        <TextInput
-                          style={styles.input}
-                          placeholder={t('register.addressPlaceholder')}
-                          placeholderTextColor="#9ca3af"
-                          value={workshopData.adr}
-                          onChangeText={(text) => handleWorkshopChange('adr', text)}
-                        />
-                      </View>
-
-                      <View style={styles.inputContainer}>
-                        <ThemedText style={styles.label}>{t('register.phone')}</ThemedText>
-                        <TextInput
-                          style={styles.input}
-                          placeholder={t('register.phonePlaceholder')}
-                          placeholderTextColor="#9ca3af"
-                          value={workshopData.phone}
-                          onChangeText={(text) =>
-                            handleWorkshopChange('phone', sanitizeRegisterPhoneInput(text))
-                          }
-                          keyboardType="number-pad"
-                          maxLength={10}
-                        />
-                      </View>
-
-                      <View style={styles.inputContainer}>
-                        <ThemedText style={styles.label}>{t('register.passwordLabel')}</ThemedText>
-                        <View style={styles.passwordWrapper}>
-                          <TextInput
-                            style={styles.passwordInput}
-                            placeholder="••••••••"
-                            placeholderTextColor="#9ca3af"
-                            value={workshopData.password}
-                            onChangeText={(text) => handleWorkshopChange('password', text)}
-                            secureTextEntry={!showPassword}
-                            autoCapitalize="none"
-                          />
-                          <TouchableOpacity
-                            onPress={() => setShowPassword(!showPassword)}
-                            style={styles.eyeButton}
-                          >
-                            <IconSymbol
-                              name={showPassword ? 'checkmark.circle.fill' : 'shield.fill'}
-                              size={20}
-                              color="#6b7280"
-                            />
-                          </TouchableOpacity>
-                        </View>
-                      </View>
-
-                      <View style={styles.inputContainer}>
-                        <ThemedText style={styles.label}>{t('register.confirmPasswordLabel')}</ThemedText>
-                        <View style={styles.passwordWrapper}>
-                          <TextInput
-                            style={styles.passwordInput}
-                            placeholder="••••••••"
-                            placeholderTextColor="#9ca3af"
-                            value={workshopData.confirmPassword}
-                            onChangeText={(text) => handleWorkshopChange('confirmPassword', text)}
-                            secureTextEntry={!showConfirmPassword}
-                            autoCapitalize="none"
-                          />
-                          <TouchableOpacity
-                            onPress={() => setShowConfirmPassword(!showConfirmPassword)}
-                            style={styles.eyeButton}
-                          >
-                            <IconSymbol
-                              name={showConfirmPassword ? 'checkmark.circle.fill' : 'shield.fill'}
-                              size={20}
-                              color="#6b7280"
-                            />
-                          </TouchableOpacity>
-                        </View>
-                      </View>
-                    </View>
-                  )}
+                  </View>
 
                   <TouchableOpacity
                     onPress={handleSubmit}
-                    disabled={!registerAs || isSubmitting}
-                    style={[styles.submitButton, (!registerAs || isSubmitting) && styles.submitButtonDisabled]}
+                    disabled={isSubmitting}
+                    style={[styles.submitButton, isSubmitting && styles.submitButtonDisabled]}
                     activeOpacity={0.8}
                   >
                     <LinearGradient
@@ -860,7 +556,6 @@ export default function RegisterPage() {
                   </View>
                 </LinearGradient>
               </Animated.View>
-            )}
 
             {/* Back Button */}
             <TouchableOpacity
@@ -993,62 +688,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     paddingHorizontal: padding.horizontal,
   },
-  typeSelector: {
-    flexDirection: 'column',
-    gap: padding.medium,
-    marginBottom: padding.large,
-  },
-  typeCard: {
-    width: '100%',
-    padding: padding.large,
-    borderRadius: scale(16),
-    backgroundColor: '#ffffff',
-    borderWidth: 2,
-    borderColor: '#e5e7eb',
-    alignItems: 'center',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.1,
-        shadowRadius: 4,
-      },
-      android: {
-        elevation: 2,
-      },
-    }),
-  },
-  typeCardActive: {
-    borderColor: '#0d9488',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#0d9488',
-        shadowOpacity: 0.2,
-        shadowRadius: 8,
-      },
-      android: {
-        elevation: 4,
-      },
-    }),
-  },
-  typeIconContainer: {
-    width: 56,
-    height: 56,
-    borderRadius: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 12,
-  },
-  typeTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#1f2937',
-    marginBottom: 4,
-  },
-  typeSubtitle: {
-    fontSize: 12,
-    color: '#6b7280',
-  },
   formContainer: {
     borderRadius: 24,
     overflow: 'hidden',
@@ -1072,9 +711,6 @@ const styles = StyleSheet.create({
   },
   form: {
     padding: padding.large,
-  },
-  formWithPadding: {
-    padding: padding.large * 1.5,
   },
   errorContainer: {
     flexDirection: 'row',
@@ -1146,45 +782,6 @@ const styles = StyleSheet.create({
   },
   eyeButton: {
     padding: 12,
-  },
-  selectContainer: {
-    height: 48,
-    backgroundColor: '#f9fafb',
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: '#e5e7eb',
-    paddingHorizontal: 16,
-    justifyContent: 'center',
-  },
-  selectText: {
-    fontSize: 16,
-    color: '#1f2937',
-  },
-  workshopTypeOptions: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginTop: 10,
-  },
-  workshopTypeOption: {
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: '#d1d5db',
-    backgroundColor: '#f9fafb',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-  },
-  workshopTypeOptionActive: {
-    borderColor: '#0d9488',
-    backgroundColor: '#ccfbf1',
-  },
-  workshopTypeOptionText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#4b5563',
-  },
-  workshopTypeOptionTextActive: {
-    color: '#0f766e',
   },
   submitButton: {
     borderRadius: scale(12),

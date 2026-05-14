@@ -1,5 +1,5 @@
 import { Tabs, useSegments } from 'expo-router';
-import React, { useState, useEffect } from 'react';
+import React, { useEffect } from 'react';
 import {
   ActivityIndicator,
   Platform,
@@ -99,40 +99,12 @@ export default function TabLayout() {
   const screenWidth = Dimensions.get('window').width;
   const targetWidth = Math.round(screenWidth * 0.95);
   const horizontalMargin = Math.max((screenWidth - targetWidth) / 2, 0);
-  const [showTabToast, setShowTabToast] = useState(false);
-  const [tabToastText, setTabToastText] = useState<string>('');
-  const lastNotifCountRef = React.useRef<number>(0);
-  const lastUnreadChatsRef = React.useRef<number>(0);
   const suppressChatBadgeRef = React.useRef<boolean>(false);
   const prevIsOnChatTabRef = React.useRef<boolean>(isOnChatTab);
-  
+
   // Unread chat messages count from socket-driven notifications (no polling)
   const unreadMessagesCount = notifications.filter((n: any) => !n.is_read && n.type === 'message').length;
   const effectiveUnreadMessagesCount = suppressChatBadgeRef.current ? 0 : unreadMessagesCount;
-
-  // Show a brief toast above the navigator when a new notification or message arrives
-  useEffect(() => {
-    const currentNonMsg = notifications.filter((n: any) => !n.is_read && n.type !== 'message').length;
-    if (currentNonMsg > (lastNotifCountRef.current || 0)) {
-      setTabToastText(t('notifications.title'));
-      setShowTabToast(true);
-      const id = setTimeout(() => setShowTabToast(false), 2500);
-      lastNotifCountRef.current = currentNonMsg;
-      return () => clearTimeout(id);
-    }
-    lastNotifCountRef.current = currentNonMsg;
-  }, [notifications, t]);
-
-  useEffect(() => {
-    if (effectiveUnreadMessagesCount > (lastUnreadChatsRef.current || 0)) {
-      setTabToastText(t('notifications.newMessages') || t('notifications.newMessage') || 'New message');
-      setShowTabToast(true);
-      const id = setTimeout(() => setShowTabToast(false), 2500);
-      lastUnreadChatsRef.current = effectiveUnreadMessagesCount;
-      return () => clearTimeout(id);
-    }
-    lastUnreadChatsRef.current = effectiveUnreadMessagesCount;
-  }, [effectiveUnreadMessagesCount, t]);
 
   // Suppress badge while user is on Chat tab or opens a conversation; resume after leaving
   useEffect(() => {
@@ -181,7 +153,6 @@ export default function TabLayout() {
   }
 
   return (
-    <>
     <Tabs
       screenOptions={{
         tabBarActiveTintColor: '#0d9488',
@@ -357,34 +328,6 @@ export default function TabLayout() {
         }}
       />
     </Tabs>
-      {showTabToast && (
-      <View
-        style={{
-          position: 'absolute',
-          bottom:
-            (Platform.OS === 'ios'
-              ? Math.max(insets.bottom + scale(16), scale(22))
-              : Math.max(insets.bottom + scale(12), scale(18))) + (Platform.OS === 'ios' ? 80 : 72),
-          left: Math.max(insets.left + scale(24), scale(24)),
-          right: Math.max(insets.right + scale(24), scale(24)),
-          alignItems: 'center',
-        }}
-        pointerEvents="none"
-      >
-        <View
-          style={{
-            backgroundColor: '#0f172a',
-            paddingVertical: 8,
-            paddingHorizontal: 14,
-            borderRadius: 999,
-            opacity: 0.92,
-          }}
-        >
-          <Text style={{ color: '#ffffff', fontWeight: '800' }}>{tabToastText}</Text>
-        </View>
-      </View>
-      )}
-    </>
   );
 }
 

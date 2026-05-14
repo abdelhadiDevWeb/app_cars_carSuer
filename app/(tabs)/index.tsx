@@ -17,6 +17,7 @@ import Animated, {
   FadeInDown,
   FadeInUp,
   FadeIn,
+  ZoomIn,
   useAnimatedStyle,
   useSharedValue,
   withSpring,
@@ -74,7 +75,7 @@ export default function HomeScreen() {
   const [userImage, setUserImage] = useState<string | null>(null);
   const [authButtonLayout, setAuthButtonLayout] = useState({ x: 0, y: 0, width: 0, height: 0 });
   const scrollViewRef = useRef<ScrollView>(null);
-  const mainScrollViewRef = useRef<ScrollView>(null);
+  const mainScrollViewRef = useRef<React.ElementRef<typeof Animated.ScrollView>>(null);
   const filtersSectionRef = useRef<View>(null);
   const scrollY = useSharedValue(0);
   
@@ -391,20 +392,24 @@ export default function HomeScreen() {
   const getStatusBadge = (status: string) => {
     switch (status) {
       case 'actif':
-        return { text: t('home.status_active'), colors: ['#10b981', '#059669'] };
+        return { text: t('home.status_active'), colors: ['#10b981', '#059669'] as const };
       case 'en_attente':
-        return { text: t('home.status_pending'), colors: ['#f59e0b', '#d97706'] };
+        return { text: t('home.status_pending'), colors: ['#f59e0b', '#d97706'] as const };
       case 'sold':
-        return { text: t('home.status_sold'), colors: ['#6b7280', '#4b5563'] };
+        return { text: t('home.status_sold'), colors: ['#6b7280', '#4b5563'] as const };
       case 'no_proccess':
-        return { text: t('home.status_notProcessed'), colors: ['#ef4444', '#dc2626'] };
+        return { text: t('home.status_notProcessed'), colors: ['#ef4444', '#dc2626'] as const };
       default:
-        return { text: status, colors: ['#6b7280', '#4b5563'] };
+        return { text: status, colors: ['#6b7280', '#4b5563'] as const };
     }
   };
 
-  // Get active cars for carousel (max 5)
-  const carouselCars = cars.filter(car => car.status === 'actif').slice(0, 5);
+  // Hero carousel: only show cars that currently have an active sponsor (the
+  // `sponsor` field is attached server-side by /car/active). Non-sponsored
+  // cars still appear lower in the page in the regular grid. No slice cap —
+  // every paid sponsorship gets a slot, ordered by whatever order the backend
+  // returns (typically newest first).
+  const carouselCars = cars.filter(car => car.status === 'actif' && car.sponsor);
 
   const handleCarouselPrev = () => {
     if (carouselCars.length === 0) return;
@@ -559,72 +564,8 @@ export default function HomeScreen() {
 
         {/* Main Content */}
         <View style={styles.mainContent}>
-          {/* Hero Section */}
-          <Animated.View
-            style={[styles.heroSection, heroAnimatedStyle]}
-          >
-            {/* Trust Badge with animation */}
-            <Animated.View
-              style={[styles.trustBadge, trustBadgeAnimatedStyle]}
-            >
-              <LinearGradient
-                colors={['#f0fdfa', '#ccfbf1']}
-                style={styles.trustBadgeGradient}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-              >
-                <IconSymbol name="sparkles" size={18} color="#0d9488" />
-                <ThemedText style={styles.trustBadgeText}>
-                  {t('home.trustBadge')}
-                </ThemedText>
-              </LinearGradient>
-            </Animated.View>
-
-            {/* Main Headline */}
-            <View>
-              <ThemedText style={styles.mainHeadline}>
-                {t('home.headlinePre')}{' '}
-                <ThemedText style={styles.highlightText}>
-                  {t('home.headlineHighlight')}
-          </ThemedText>{' '}
-                {t('home.headlinePost')}
-              </ThemedText>
-            </View>
-
-            {/* Description */}
-            <View style={styles.descriptionContainer}>
-              <ThemedText style={styles.description}>
-                {t('home.description')}
-              </ThemedText>
-            </View>
-
-            {/* Trust Indicators */}
-            <View style={styles.trustIndicators}>
-              <View style={styles.trustBadgeSmall}>
-                <LinearGradient
-                  colors={['#f0fdf4', '#dcfce7']}
-                  style={styles.trustBadgeSmallGradient}
-                >
-                  <IconSymbol name="checkmark.circle.fill" size={18} color="#10b981" />
-                  <ThemedText style={styles.trustBadgeSmallText}>
-                    {t('home.verifiedByExperts')}
-                  </ThemedText>
-                </LinearGradient>
-              </View>
-              <View style={[styles.trustBadgeSmall, styles.trustBadgeBlue]}>
-                <LinearGradient
-                  colors={['#eff6ff', '#dbeafe']}
-                  style={styles.trustBadgeSmallGradient}
-                >
-                  <IconSymbol name="shield.fill" size={18} color="#3b82f6" />
-                  <ThemedText style={styles.trustBadgeSmallText}>
-                    {t('home.secure')}
-                  </ThemedText>
-                </LinearGradient>
-              </View>
-            </View>
-
-            {/* CTA Buttons with press animations */}
+          {/* Top actions: Find a car + Add vehicle — first on screen */}
+          <Animated.View style={[styles.heroSection, styles.ctaTopSection, heroAnimatedStyle]}>
             <View style={styles.ctaButtons}>
               <AnimatedTouchableOpacity
                 onPress={handlePrimaryButtonPress}
@@ -729,6 +670,23 @@ export default function HomeScreen() {
                             colors={['transparent', 'rgba(0,0,0,0.7)']}
                             style={styles.carouselOverlay}
                           />
+                          {/* Sponsored badge — appears on cars with an active
+                              sponsor so the promoted slot is visible to users. */}
+                          {car.sponsor && (
+                            <View style={styles.carouselSponsorBadge}>
+                              <LinearGradient
+                                colors={['#f59e0b', '#d97706']}
+                                style={styles.carouselSponsorBadgeBlur}
+                                start={{ x: 0, y: 0 }}
+                                end={{ x: 1, y: 1 }}
+                              >
+                                <IconSymbol name="star.fill" size={12} color="#ffffff" />
+                                <ThemedText style={styles.carouselSponsorBadgeText}>
+                                  {t('home.sponsoredBadge')}
+                                </ThemedText>
+                              </LinearGradient>
+                            </View>
+                          )}
                           {/* Car Info Overlay */}
                           <View style={styles.carouselInfoOverlay}>
                             <ThemedText style={styles.carouselCarName}>{carName}</ThemedText>
@@ -749,9 +707,9 @@ export default function HomeScreen() {
                   </ScrollView>
                 ) : (
                   <View style={styles.carouselEmpty}>
-                    <IconSymbol name="car.fill" size={64} color="#9ca3af" />
+                    <IconSymbol name="star.fill" size={64} color="#9ca3af" />
                     <ThemedText style={styles.carouselEmptyText}>
-                      {t('home.noActiveCars')}
+                      {t('home.noSponsoredCars')}
                     </ThemedText>
                   </View>
                 )}
@@ -1416,6 +1374,157 @@ export default function HomeScreen() {
                 })}
               </View>
             )}
+          </Animated.View>
+
+          {/* Introduction — modern responsive card + staggered animations (after listings) */}
+          <Animated.View
+            entering={FadeInUp.duration(700).springify()}
+            style={styles.introFooterOuter}
+          >
+            <LinearGradient
+              colors={['rgba(255, 255, 255, 0.95)', 'rgba(240, 253, 250, 0.88)', 'rgba(255, 255, 255, 0.92)']}
+              locations={[0, 0.45, 1]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.introFooterSection}
+            >
+              <LinearGradient
+                colors={['rgba(13, 148, 136, 0.14)', 'rgba(45, 212, 191, 0.06)', 'transparent']}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={StyleSheet.absoluteFillObject}
+              />
+              <View style={styles.introFooterContent}>
+                <Animated.View
+                  entering={ZoomIn.duration(420).delay(60).springify()}
+                  style={[styles.trustBadge, styles.introFooterTrustBadge, trustBadgeAnimatedStyle]}
+                >
+                  <LinearGradient
+                    colors={['#ecfeff', '#ccfbf1', '#99f6e4']}
+                    style={[styles.trustBadgeGradient, styles.introFooterTrustBadgeInner]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                  >
+                    <IconSymbol
+                      name="sparkles"
+                      size={isSmallDevice() ? 16 : 18}
+                      color="#0d9488"
+                    />
+                    <ThemedText style={[styles.trustBadgeText, styles.introFooterTrustBadgeText]}>
+                      {t('home.trustBadge')}
+                    </ThemedText>
+                  </LinearGradient>
+                </Animated.View>
+
+                <Animated.View entering={FadeInUp.duration(520).delay(120).springify()}>
+                  <ThemedText style={[styles.mainHeadline, styles.introFooterHeadline]}>
+                    {t('home.headlinePre')}{' '}
+                    <ThemedText style={styles.highlightText}>
+                      {t('home.headlineHighlight')}
+                    </ThemedText>{' '}
+                    {t('home.headlinePost')}
+                  </ThemedText>
+                </Animated.View>
+
+                <Animated.View
+                  entering={FadeInUp.duration(520).delay(200).springify()}
+                  style={styles.introFooterDescriptionWrap}
+                >
+                  <ThemedText style={[styles.description, styles.introFooterDescription]}>
+                    {t('home.description')}
+                  </ThemedText>
+                </Animated.View>
+
+                <Animated.View
+                  entering={FadeInUp.duration(520).delay(280).springify()}
+                  style={[styles.trustIndicators, styles.introFooterTrustIndicators]}
+                >
+                  <View style={[styles.trustBadgeSmall, styles.introFooterChip]}>
+                    <LinearGradient
+                      colors={['#f0fdf4', '#dcfce7']}
+                      style={[styles.trustBadgeSmallGradient, styles.introFooterChipInner]}
+                    >
+                      <IconSymbol
+                        name="checkmark.circle.fill"
+                        size={isSmallDevice() ? 15 : 18}
+                        color="#10b981"
+                      />
+                      <ThemedText
+                        style={[styles.trustBadgeSmallText, styles.introFooterChipText]}
+                        numberOfLines={2}
+                      >
+                        {t('home.verifiedByExperts')}
+                      </ThemedText>
+                    </LinearGradient>
+                  </View>
+                  <View style={[styles.trustBadgeSmall, styles.trustBadgeBlue, styles.introFooterChip]}>
+                    <LinearGradient
+                      colors={['#eff6ff', '#dbeafe']}
+                      style={[styles.trustBadgeSmallGradient, styles.introFooterChipInner]}
+                    >
+                      <IconSymbol
+                        name="shield.fill"
+                        size={isSmallDevice() ? 15 : 18}
+                        color="#3b82f6"
+                      />
+                      <ThemedText
+                        style={[styles.trustBadgeSmallText, styles.introFooterChipTextBlue]}
+                        numberOfLines={2}
+                      >
+                        {t('home.secure')}
+                      </ThemedText>
+                    </LinearGradient>
+                  </View>
+                </Animated.View>
+
+                <Animated.View
+                  entering={FadeInUp.duration(560).delay(360).springify()}
+                  style={[styles.ctaButtons, styles.introFooterCtas]}
+                >
+                  <AnimatedTouchableOpacity
+                    onPress={handlePrimaryButtonPress}
+                    style={[styles.primaryButton, styles.introFooterPrimaryBtn, primaryButtonAnimatedStyle]}
+                    activeOpacity={0.9}
+                  >
+                    <LinearGradient
+                      colors={['#0f766e', '#0d9488', '#14b8a6', '#2dd4bf']}
+                      style={[styles.primaryButtonGradient, styles.introFooterPrimaryGradient]}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 1 }}
+                    >
+                      <IconSymbol
+                        name="magnifyingglass"
+                        size={isSmallDevice() ? 19 : 22}
+                        color="#fff"
+                      />
+                      <ThemedText style={[styles.primaryButtonText, styles.introFooterPrimaryText]}>
+                        {t('home.findCar')}
+                      </ThemedText>
+                      <IconSymbol
+                        name="chevron.right"
+                        size={isSmallDevice() ? 16 : 18}
+                        color="#fff"
+                      />
+                    </LinearGradient>
+                  </AnimatedTouchableOpacity>
+
+                  <AnimatedTouchableOpacity
+                    onPress={handleSecondaryButtonPress}
+                    style={[styles.secondaryButton, styles.introFooterSecondaryBtn, secondaryButtonAnimatedStyle]}
+                    activeOpacity={0.9}
+                  >
+                    <LinearGradient
+                      colors={['rgba(255, 255, 255, 0.98)', 'rgba(248, 250, 252, 0.92)']}
+                      style={[styles.secondaryButtonBlur, styles.introFooterSecondaryBlur]}
+                    >
+                      <ThemedText style={[styles.secondaryButtonText, styles.introFooterSecondaryText]}>
+                        {t('home.sellCar')}
+                      </ThemedText>
+                    </LinearGradient>
+                  </AnimatedTouchableOpacity>
+                </Animated.View>
+              </View>
+            </LinearGradient>
           </Animated.View>
         </View>
       </Animated.ScrollView>
@@ -2178,6 +2287,155 @@ const styles = StyleSheet.create({
     gap: 28,
     paddingTop: 8,
   },
+  ctaTopSection: {
+    width: '100%',
+    flexBasis: '100%',
+    minWidth: '100%',
+    flexGrow: 0,
+    gap: 16,
+    paddingBottom: 4,
+  },
+  introFooterOuter: {
+    flex: 0,
+    flexGrow: 0,
+    flexShrink: 0,
+    alignSelf: 'stretch',
+    width: '100%',
+    maxWidth: '100%',
+    flexBasis: '100%',
+    minWidth: '100%',
+    marginTop: scale(SCREEN_WIDTH < 400 ? 16 : 24),
+    paddingHorizontal: SCREEN_WIDTH < 400 ? scale(4) : scale(8),
+    alignItems: 'center',
+  },
+  introFooterSection: {
+    width: '100%',
+    maxWidth: SCREEN_WIDTH >= 768 ? 620 : '100%',
+    alignSelf: 'center',
+    borderRadius: scale(SCREEN_WIDTH < 400 ? 20 : 26),
+    overflow: 'hidden',
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(13, 148, 136, 0.18)',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0d9488',
+        shadowOffset: { width: 0, height: 12 },
+        shadowOpacity: 0.12,
+        shadowRadius: 28,
+      },
+      android: { elevation: 6 },
+    }),
+  },
+  introFooterContent: {
+    paddingTop: scale(SCREEN_WIDTH < 400 ? 18 : 26),
+    paddingHorizontal: scale(SCREEN_WIDTH < 400 ? 14 : 22),
+    paddingBottom: scale(SCREEN_WIDTH < 400 ? 28 : 36),
+    gap: scale(SCREEN_WIDTH < 400 ? 14 : 22),
+    zIndex: 1,
+  },
+  introFooterTrustBadge: {
+    alignSelf: SCREEN_WIDTH < 480 ? 'center' : 'flex-start',
+  },
+  introFooterTrustBadgeInner: {
+    paddingHorizontal: scale(SCREEN_WIDTH < 400 ? 12 : 16),
+    paddingVertical: scale(SCREEN_WIDTH < 400 ? 8 : 10),
+  },
+  introFooterTrustBadgeText: {
+    fontSize: isSmallDevice() ? fontSizes.xs : fontSizes.sm,
+    maxWidth: SCREEN_WIDTH - scale(80),
+  },
+  introFooterHeadline: {
+    textAlign: SCREEN_WIDTH < 480 ? 'center' : 'left',
+    fontSize: getResponsiveValue({
+      small: fontSizes['2xl'],
+      medium: fontScale(36),
+      large: fontScale(44),
+      default: fontSizes['3xl'],
+    }),
+    lineHeight: getResponsiveValue({
+      small: fontSizes['2xl'] * 1.25,
+      medium: fontScale(44),
+      large: fontScale(52),
+      default: fontSizes['3xl'] * 1.25,
+    }),
+    letterSpacing: SCREEN_WIDTH < 400 ? -0.4 : -0.8,
+  },
+  introFooterDescriptionWrap: {
+    marginTop: scale(4),
+  },
+  introFooterDescription: {
+    textAlign: SCREEN_WIDTH < 480 ? 'center' : 'left',
+    fontSize: getResponsiveValue({
+      small: fontSizes.sm,
+      medium: fontSizes.md,
+      large: fontSizes.lg,
+      default: fontSizes.md,
+    }),
+    lineHeight: getResponsiveValue({
+      small: fontSizes.sm * 1.55,
+      medium: fontSizes.md * 1.55,
+      large: fontSizes.lg * 1.5,
+      default: fontSizes.md * 1.5,
+    }),
+    paddingHorizontal: SCREEN_WIDTH < 400 ? scale(2) : 0,
+  },
+  introFooterTrustIndicators: {
+    justifyContent: SCREEN_WIDTH < 480 ? 'center' : 'flex-start',
+    marginTop: scale(4),
+    gap: scale(SCREEN_WIDTH < 400 ? 10 : 14),
+  },
+  introFooterChip: {
+    maxWidth: SCREEN_WIDTH < 400 ? '100%' : '48%',
+    flexGrow: SCREEN_WIDTH < 400 ? 1 : 0,
+    minWidth: SCREEN_WIDTH < 360 ? '100%' : undefined,
+  },
+  introFooterChipInner: {
+    paddingHorizontal: scale(SCREEN_WIDTH < 400 ? 10 : 14),
+    paddingVertical: scale(SCREEN_WIDTH < 400 ? 8 : 10),
+    gap: scale(6),
+  },
+  introFooterChipText: {
+    fontSize: isSmallDevice() ? fontSizes.xs : fontSizes.sm,
+    flexShrink: 1,
+  },
+  introFooterChipTextBlue: {
+    fontSize: isSmallDevice() ? fontSizes.xs : fontSizes.sm,
+    color: '#1e40af',
+    flexShrink: 1,
+  },
+  introFooterCtas: {
+    width: '100%',
+    marginTop: scale(6),
+    paddingTop: scale(8),
+    gap: scale(SCREEN_WIDTH < 400 ? 10 : 14),
+    alignItems: 'stretch',
+  },
+  introFooterPrimaryBtn: {
+    width: '100%',
+    borderRadius: scale(SCREEN_WIDTH < 400 ? 16 : 18),
+  },
+  introFooterPrimaryGradient: {
+    paddingVertical: scale(SCREEN_WIDTH < 400 ? 14 : 18),
+    paddingHorizontal: scale(SCREEN_WIDTH < 400 ? 16 : 28),
+    gap: scale(SCREEN_WIDTH < 400 ? 8 : 12),
+  },
+  introFooterPrimaryText: {
+    fontSize: isSmallDevice() ? fontSizes.sm + 1 : 17,
+    flexShrink: 1,
+    textAlign: 'center',
+  },
+  introFooterSecondaryBtn: {
+    width: '100%',
+    borderRadius: scale(SCREEN_WIDTH < 400 ? 16 : 18),
+  },
+  introFooterSecondaryBlur: {
+    paddingVertical: scale(SCREEN_WIDTH < 400 ? 14 : 18),
+    paddingHorizontal: scale(SCREEN_WIDTH < 400 ? 16 : 28),
+  },
+  introFooterSecondaryText: {
+    fontSize: isSmallDevice() ? fontSizes.sm + 1 : 17,
+    textAlign: 'center',
+  },
   trustBadge: {
     alignSelf: 'flex-start',
     borderRadius: 28,
@@ -2396,6 +2654,38 @@ const styles = StyleSheet.create({
     color: '#0d9488',
     letterSpacing: 0.3,
   },
+  carouselSponsorBadge: {
+    position: 'absolute',
+    top: 16,
+    right: 16,
+    zIndex: 10,
+    borderRadius: 20,
+    overflow: 'hidden',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.2,
+        shadowRadius: 8,
+      },
+      android: {
+        elevation: 6,
+      },
+    }),
+  },
+  carouselSponsorBadgeBlur: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+  },
+  carouselSponsorBadgeText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#ffffff',
+    letterSpacing: 0.3,
+  },
   carousel: {
     width: '100%',
     height: SCREEN_WIDTH < 375 ? 300 : SCREEN_WIDTH < 768 ? 380 : 480,
@@ -2556,6 +2846,10 @@ const styles = StyleSheet.create({
   },
   // Car Listings Styles
   carListingsSection: {
+    width: '100%',
+    flexBasis: '100%',
+    minWidth: '100%',
+    flexGrow: 0,
     marginTop: scale(60),
     paddingHorizontal: padding.horizontal,
   },

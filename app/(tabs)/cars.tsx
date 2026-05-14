@@ -27,6 +27,8 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
 import { io, Socket } from 'socket.io-client';
 import { useTranslation } from 'react-i18next';
+import { useLocation } from '@/contexts/LocationContext';
+import { haversineKm, normalizeRegion } from '@/utils/geoDistance';
 
 const padding = getPadding();
 const fontSizes = getFontSizes();
@@ -53,6 +55,22 @@ interface Car {
   accident?: boolean;
   usedby?: string;
   createdAt?: string;
+  /** Optional workflow tag from API, e.g. fin / rdv_fin */
+  type?: string;
+}
+
+/** Active cars that belong only in the « Fini » tab: finished RDV and/or type fin|rdv_fin */
+function isFiniSectionCar(car: Car, apts: Appointment[]): boolean {
+  if (car.status !== 'actif') return false;
+  const raw = String(car.type ?? '')
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, '_')
+    .replace(/-/g, '_');
+  const byType =
+    raw === 'fin' || raw === 'rdv_fin' || raw === 'rdvfin';
+  const byRdv = apts.some((a) => a.status === 'finish');
+  return byType || byRdv;
 }
 
 interface Appointment {
@@ -76,17 +94,93 @@ interface Workshop {
   certifie?: boolean;
   price_visit_mec?: number | null;
   price_visit_paint?: number | null;
+  locationLat?: number | null;
+  locationLng?: number | null;
+  locationRegion?: string | null;
+  real_time?: boolean;
+}
+
+/**
+ * Sponsorship returned by `GET /api/sponsor/my-sponsors`.
+ * `id_car` is populated server-side with a small subset of car fields; when the
+ * referenced car has been deleted we still receive a string id back.
+ */
+interface Sponsor {
+  id?: string;
+  _id: string;
+  id_car: string | (Partial<Car> & { _id: string });
+  id_owner: string;
+  start_date: string;
+  end_date: string;
+  duration: number;
+  /** Price paid for this sponsorship (DA). 0 for legacy rows. */
+  price: number;
+  status: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/** A purchasable sponsor plan (`abonnement_sponsor`). */
+interface SponsorPlan {
+  id: string;
+  duration: number;
+  price: number;
+}
+
+/** A car returned by `GET /api/sponsor/sponsorable-cars`. */
+interface SponsorableCar {
+  id: string;
+  _id: string;
+  brand?: string;
+  model?: string;
+  year?: number;
+  images?: string[];
+  price?: number;
+  status?: string;
+  /** ISO date of the most recent sponsor on this car (now expired/cancelled), or null. */
+  previous_sponsor_end_date: string | null;
+  had_previous_sponsor: boolean;
 }
 
 export default function CarsScreen() {
   const { isAuthenticated, user, isLoading } = useAuth();
-  const { t } = useTranslation();
+  // We pull `i18n` here so we can format dates in the active language locale
+  // (and so a language change forces this component to re-render).
+  const { t, i18n } = useTranslation();
   const router = useRouter();
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [cars, setCars] = useState<Car[]>([]);
   const [appointments, setAppointments] = useState<Appointment[]>([]);
-  const [rdvFilter, setRdvFilter] = useState<'all' | 'with_rdv' | 'without_rdv' | 'termine' | 'temoignages'>('all');
+  const [sponsors, setSponsors] = useState<Sponsor[]>([]);
+  const [rdvFilter, setRdvFilter] = useState<'all' | 'with_rdv' | 'without_rdv' | 'termine' | 'sponsor'>('all');
+
+  // Create-Sponsor flow state ------------------------------------------------
+  const [showCreateSponsorModal, setShowCreateSponsorModal] = useState(false);
+  const [sponsorableCars, setSponsorableCars] = useState<SponsorableCar[]>([]);
+  const [loadingSponsorableCars, setLoadingSponsorableCars] = useState(false);
+  const [sponsorPlans, setSponsorPlans] = useState<SponsorPlan[]>([]);
+  const [loadingSponsorPlans, setLoadingSponsorPlans] = useState(false);
+  const [selectedSponsorCarId, setSelectedSponsorCarId] = useState<string>('');
+  const [selectedSponsorPlanId, setSelectedSponsorPlanId] = useState<string>('');
+  const [creatingSponsor, setCreatingSponsor] = useState(false);
+  // Payment modal shown after a successful create.
+  const [showSponsorPaymentModal, setShowSponsorPaymentModal] = useState(false);
+  const [paymentSummary, setPaymentSummary] = useState<{
+    car: SponsorableCar | null;
+    plan: SponsorPlan | null;
+    sponsorId?: string;
+  }>({ car: null, plan: null });
+  const [paymentDone, setPaymentDone] = useState(false);
+  const [payingNow, setPayingNow] = useState(false);
+
+  // `now` ticks every minute so the "time remaining" text on each sponsor card
+  // stays accurate without forcing a re-fetch.
+  const [now, setNow] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const interval = setInterval(() => setNow(Date.now()), 60 * 1000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Add car modal
   const [showAddModal, setShowAddModal] = useState(false);
@@ -120,6 +214,13 @@ export default function CarsScreen() {
   const [showCustomBrand, setShowCustomBrand] = useState(false);
   const [showBrandPicker, setShowBrandPicker] = useState(false);
 
+  // Color picker (options come from backend table `Color`)
+  const [availableColors, setAvailableColors] = useState<{ id: string; name: string }[]>([]);
+  const [loadingColors, setLoadingColors] = useState(false);
+  const [showColorPicker, setShowColorPicker] = useState(false);
+  const [showCustomColor, setShowCustomColor] = useState(false);
+  const [customColor, setCustomColor] = useState('');
+
   // RDV modal
   const [showRdvModal, setShowRdvModal] = useState(false);
   const [creatingRdv, setCreatingRdv] = useState(false);
@@ -146,6 +247,8 @@ export default function CarsScreen() {
     sortBy: 'name' as 'name' | 'price_low' | 'price_high',
     showCertifiedOnly: false,
   });
+  const [rdvWorkshopSection, setRdvWorkshopSection] = useState<'nearest' | 'real_time' | 'other'>('nearest');
+  const { lat: userLat, lng: userLng, region: userRegion } = useLocation();
 
   const statusMeta = useMemo(() => {
     const map: Record<string, { label: string; colors: [string, string] }> = {
@@ -176,14 +279,16 @@ export default function CarsScreen() {
       return;
     }
     try {
-      console.log('🔄 Refreshing cars and appointments data silently...');
-      const [carsRes, rdvRes] = await Promise.all([
+      console.log('🔄 Refreshing cars / appointments / sponsors data silently...');
+      const [carsRes, rdvRes, sponsorRes] = await Promise.all([
         apiRequest('/car/my-cars'),
         apiRequest('/rdv-workshop/my-appointments'),
+        apiRequest('/sponsor/my-sponsors'),
       ]);
 
       const carsData = await carsRes.json().catch(() => null);
       const rdvData = await rdvRes.json().catch(() => null);
+      const sponsorData = await sponsorRes.json().catch(() => null);
 
       if (carsRes.ok && carsData?.ok && Array.isArray(carsData.cars)) {
         console.log(`✅ Updated ${carsData.cars.length} cars`);
@@ -198,8 +303,15 @@ export default function CarsScreen() {
       } else {
         console.log('⚠️ Failed to fetch appointments or invalid response');
       }
+
+      if (sponsorRes.ok && sponsorData?.ok && Array.isArray(sponsorData.sponsors)) {
+        console.log(`✅ Updated ${sponsorData.sponsors.length} sponsors`);
+        setSponsors(sponsorData.sponsors);
+      } else {
+        console.log('⚠️ Failed to fetch sponsors or invalid response');
+      }
     } catch (err: any) {
-      console.error('❌ Error refreshing cars/appointments:', err);
+      console.error('❌ Error refreshing cars/appointments/sponsors:', err);
     }
   }, [isAuthenticated, user?.type]);
 
@@ -211,13 +323,15 @@ export default function CarsScreen() {
     }
     try {
       setLoading(true);
-      const [carsRes, rdvRes] = await Promise.all([
+      const [carsRes, rdvRes, sponsorRes] = await Promise.all([
         apiRequest('/car/my-cars'),
         apiRequest('/rdv-workshop/my-appointments'),
+        apiRequest('/sponsor/my-sponsors'),
       ]);
 
       const carsData = await carsRes.json().catch(() => null);
       const rdvData = await rdvRes.json().catch(() => null);
+      const sponsorData = await sponsorRes.json().catch(() => null);
 
       if (carsRes.ok && carsData?.ok && Array.isArray(carsData.cars)) {
         setCars(carsData.cars);
@@ -230,8 +344,14 @@ export default function CarsScreen() {
       } else {
         setAppointments([]);
       }
+
+      if (sponsorRes.ok && sponsorData?.ok && Array.isArray(sponsorData.sponsors)) {
+        setSponsors(sponsorData.sponsors);
+      } else {
+        setSponsors([]);
+      }
     } catch (err: unknown) {
-      console.error('Error fetching my cars/appointments:', err);
+      console.error('Error fetching my cars/appointments/sponsors:', err);
       Alert.alert(t('common.error'), t('cars.fetchMyCarsFailed'));
     } finally {
       setLoading(false);
@@ -264,6 +384,50 @@ export default function CarsScreen() {
       fetchMyCarsAndRdv();
     }
   }, [isLoading, fetchMyCarsAndRdv]);
+
+  // Lazily fetch reference colors the first time the Add Car modal is opened.
+  // Endpoint: GET /api/car/colors-reference -> { ok: true, colors: [{ id, name }] }
+  // We use a ref (not state) to track "already fetched" so the effect's deps stay
+  // limited to `showAddModal`. Including `loadingColors` in the deps caused a
+  // cleanup race: setLoadingColors(true) re-triggered the effect, the cleanup
+  // set cancelled=true, and the in-flight fetch's setState calls were discarded.
+  const colorsFetchRef = useRef(false);
+  useEffect(() => {
+    if (!showAddModal) return;
+    if (colorsFetchRef.current) return;
+    colorsFetchRef.current = true;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        setLoadingColors(true);
+        const res = await apiRequest('/car/colors-reference');
+        const data = await res.json().catch(() => ({} as any));
+        if (cancelled) return;
+        if (res.ok && data?.ok && Array.isArray(data.colors)) {
+          const list = data.colors
+            .filter((c: any) => c && typeof c.name === 'string' && c.name.trim())
+            .map((c: any) => ({ id: String(c.id ?? c._id ?? c.name), name: String(c.name) }));
+          setAvailableColors(list);
+          if (__DEV__) console.log('[Cars] Loaded reference colors:', list.length);
+          // Allow a manual retry next time the modal opens if the list came back empty.
+          if (list.length === 0) colorsFetchRef.current = false;
+        } else {
+          if (__DEV__) console.warn('[Cars] Bad colors-reference response:', res.status, data);
+          colorsFetchRef.current = false;
+        }
+      } catch (err) {
+        console.warn('[Cars] Failed to load reference colors:', err);
+        if (!cancelled) colorsFetchRef.current = false;
+      } finally {
+        if (!cancelled) setLoadingColors(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [showAddModal]);
 
   // Setup Socket.IO for real-time updates
   useEffect(() => {
@@ -387,41 +551,250 @@ export default function CarsScreen() {
     return map;
   }, [appointments]);
 
-  // Filter cars based on RDV filter
-  const filteredCars = useMemo(() => {
-    if (rdvFilter === 'all') {
-      return cars;
+  /**
+   * Index of sponsors by car id. Each value is the most recent (latest end_date)
+   * sponsor for that car, so the active-sponsor pill on car cards in the
+   * `all` / `termine` views shows the sponsor that's actually live right now.
+   */
+  const sponsorsByCarId = useMemo(() => {
+    const map = new Map<string, Sponsor>();
+    for (const s of sponsors) {
+      const carId =
+        typeof s.id_car === 'string'
+          ? s.id_car
+          : (s.id_car as any)?._id?.toString?.() || (s.id_car as any)?.id?.toString?.();
+      if (!carId) continue;
+      const existing = map.get(carId);
+      if (!existing) {
+        map.set(carId, s);
+        continue;
+      }
+      const existingEnd = new Date(existing.end_date).getTime();
+      const candidateEnd = new Date(s.end_date).getTime();
+      if (candidateEnd > existingEnd) map.set(carId, s);
     }
-    
+    return map;
+  }, [sponsors]);
+
+  const isSponsorActive = useCallback(
+    (s: Sponsor): boolean => {
+      if (!s?.status) return false;
+      const end = new Date(s.end_date).getTime();
+      return Number.isFinite(end) && end > now;
+    },
+    [now]
+  );
+
+  /**
+   * Map the i18next short code to a BCP-47 locale that the Intl API understands.
+   * This is what makes the sponsor section's dates respect the user's chosen
+   * language (fr → fr-FR, en → en-US, ar → ar-DZ).
+   */
+  const dateLocale = useMemo(() => {
+    switch (i18n.language) {
+      case 'en':
+        return 'en-US';
+      case 'ar':
+        return 'ar-DZ';
+      case 'fr':
+      default:
+        return 'fr-FR';
+    }
+  }, [i18n.language]);
+
+  const formatLocalDate = useCallback(
+    (iso: string): string => {
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return '';
+      try {
+        return d.toLocaleDateString(dateLocale);
+      } catch {
+        return d.toLocaleDateString();
+      }
+    },
+    [dateLocale]
+  );
+
+  /**
+   * Format the time remaining until `end_date` as "Xd Yh Zm". Returns the
+   * localized "Expired" label once the deadline has passed.
+   */
+  const formatTimeRemaining = useCallback(
+    (endDateIso: string): string => {
+      const endMs = new Date(endDateIso).getTime();
+      if (!Number.isFinite(endMs)) return '';
+      const diff = endMs - now;
+      if (diff <= 0) return t('cars.sponsor.expired');
+
+      const totalMinutes = Math.floor(diff / (60 * 1000));
+      const days = Math.floor(totalMinutes / (60 * 24));
+      const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+      const minutes = totalMinutes % 60;
+
+      const parts: string[] = [];
+      if (days > 0) parts.push(`${days}${t('cars.sponsor.daysShort')}`);
+      if (hours > 0) parts.push(`${hours}${t('cars.sponsor.hoursShort')}`);
+      // Always show minutes when nothing else fits, otherwise hide when 0.
+      if (parts.length === 0 || minutes > 0) {
+        parts.push(`${minutes}${t('cars.sponsor.minutesShort')}`);
+      }
+      return parts.join(' ');
+    },
+    [now, t]
+  );
+
+  // -------------------------------------------------------------------------
+  // Create-Sponsor flow handlers
+  // -------------------------------------------------------------------------
+
+  /**
+   * Open the Create Sponsor modal and lazily load both the eligible cars
+   * (active, no active sponsor) and the available subscription plans in
+   * parallel from the backend.
+   */
+  const openCreateSponsorModal = useCallback(async () => {
+    setSelectedSponsorCarId('');
+    setSelectedSponsorPlanId('');
+    setShowCreateSponsorModal(true);
+
+    setLoadingSponsorableCars(true);
+    setLoadingSponsorPlans(true);
+    try {
+      const [carsRes, plansRes] = await Promise.all([
+        apiRequest('/sponsor/sponsorable-cars'),
+        apiRequest('/sponsor/plans'),
+      ]);
+      const carsData = await carsRes.json().catch(() => null);
+      const plansData = await plansRes.json().catch(() => null);
+
+      if (carsRes.ok && carsData?.ok && Array.isArray(carsData.cars)) {
+        setSponsorableCars(carsData.cars);
+      } else {
+        setSponsorableCars([]);
+      }
+
+      if (plansRes.ok && plansData?.ok && Array.isArray(plansData.plans)) {
+        setSponsorPlans(plansData.plans);
+      } else {
+        setSponsorPlans([]);
+      }
+    } catch (err) {
+      console.error('[Sponsor] Failed to load create-modal data:', err);
+      setSponsorableCars([]);
+      setSponsorPlans([]);
+    } finally {
+      setLoadingSponsorableCars(false);
+      setLoadingSponsorPlans(false);
+    }
+  }, []);
+
+  /**
+   * Submit the Create Sponsor form. On success: close the picker modal, open
+   * the payment summary modal, and refresh the user's sponsor list.
+   */
+  const submitCreateSponsor = useCallback(async () => {
+    if (!selectedSponsorCarId || !selectedSponsorPlanId) {
+      Alert.alert(t('common.validation'), t('cars.sponsor.selectCarAndPlan'));
+      return;
+    }
+    const car = sponsorableCars.find((c) => c.id === selectedSponsorCarId) || null;
+    const plan = sponsorPlans.find((p) => p.id === selectedSponsorPlanId) || null;
+
+    try {
+      setCreatingSponsor(true);
+      const res = await apiRequest('/sponsor/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id_car: selectedSponsorCarId,
+          id_abonnement: selectedSponsorPlanId,
+        }),
+      });
+      const data = await res.json().catch(() => ({} as any));
+
+      if (!res.ok || !data?.ok) {
+        Alert.alert(
+          t('common.error'),
+          data?.message || t('cars.sponsor.createFailed')
+        );
+        return;
+      }
+
+      // Close the picker, refresh the sponsor list, and open the payment modal.
+      setShowCreateSponsorModal(false);
+      setPaymentSummary({ car, plan, sponsorId: data.sponsor?.id });
+      setPaymentDone(false);
+      setShowSponsorPaymentModal(true);
+      // Refresh the sponsor list in the background so the new card shows up.
+      void refreshDataSilently();
+    } catch (err: any) {
+      console.error('[Sponsor] Create sponsor error:', err);
+      Alert.alert(t('common.error'), t('cars.sponsor.createFailed'));
+    } finally {
+      setCreatingSponsor(false);
+    }
+  }, [
+    selectedSponsorCarId,
+    selectedSponsorPlanId,
+    sponsorableCars,
+    sponsorPlans,
+    t,
+    refreshDataSilently,
+  ]);
+
+  /**
+   * "Pay" button handler in the post-create payment modal. There's no real
+   * payment integration yet, so this just flips the modal into its success
+   * state; the sponsor itself was already created server-side. Wire to a real
+   * provider here when it's ready.
+   */
+  const handlePayNow = useCallback(async () => {
+    if (paymentDone) {
+      // Second tap acts as "close & done".
+      setShowSponsorPaymentModal(false);
+      setPaymentSummary({ car: null, plan: null });
+      setPaymentDone(false);
+      return;
+    }
+    setPayingNow(true);
+    // Simulated processing delay so the UI feels real. Replace with a real
+    // payment provider call when integrating one.
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    setPayingNow(false);
+    setPaymentDone(true);
+  }, [paymentDone]);
+
+  // Filter cars based on RDV filter (Fini cars only appear in « Fini »)
+  // The Sponsor tab renders its own dedicated list (see Sponsor section below),
+  // so we return an empty list here to skip the regular car cards.
+  const filteredCars = useMemo(() => {
+    if (rdvFilter === 'sponsor') {
+      return [];
+    }
+
     return cars.filter((car) => {
       const carId = car._id?.toString?.() || car.id || '';
       const apts = appointmentsByCarId.get(carId) || [];
       const hasRdv = apts.length > 0;
       const hasActiveOrPendingRdv = apts.some((apt) => apt.status !== 'finish');
-      
-      if (rdvFilter === 'with_rdv') {
-        // Exclude cars where all RDVs are finished from "Avec RDV" section.
-        return hasRdv && hasActiveOrPendingRdv;
-      } else if (rdvFilter === 'without_rdv') {
-        return !hasRdv;
-      } else if (rdvFilter === 'termine') {
-        // Show cars with finished RDV and active car status
-        const hasFinishedRdv = apts.some((apt) => apt.status === 'finish');
-        return hasFinishedRdv && car.status === 'actif';
-      } else if (rdvFilter === 'temoignages') {
-        // Show cars with finished RDV and active car status (same as termine but for testimonials display)
-        const hasFinishedRdv = apts.some((apt) => apt.status === 'finish');
-        return hasFinishedRdv && car.status === 'actif';
+      const isFini = isFiniSectionCar(car, apts);
+
+      if (rdvFilter === 'all') {
+        return true;
       }
-      
+      if (rdvFilter === 'with_rdv') {
+        return hasRdv && hasActiveOrPendingRdv && !isFini;
+      }
+      if (rdvFilter === 'without_rdv') {
+        return !hasRdv && !isFini;
+      }
+      if (rdvFilter === 'termine') {
+        return isFini;
+      }
+
       return true;
     });
   }, [cars, appointmentsByCarId, rdvFilter]);
-
-  // Get certified and active cars
-  const certifiedActiveCars = useMemo(() => {
-    return cars.filter((car) => car.status === 'actif');
-  }, [cars]);
 
   const canCreateRdvForCar = useCallback(
     (car: Car) => {
@@ -960,6 +1333,8 @@ export default function CarsScreen() {
       });
       setCustomBrand('');
       setShowCustomBrand(false);
+      setCustomColor('');
+      setShowCustomColor(false);
       setPickedImages([]);
       setVinValid(null);
       setVinError('');
@@ -983,12 +1358,16 @@ export default function CarsScreen() {
     setRdvForm({ workshopId: '', date: '', time: '' });
     setAvailableTimes([]);
     setWorkshopFilters({ searchName: '', searchAdr: '', sortBy: 'name', showCertifiedOnly: false });
+    setRdvWorkshopSection('nearest');
     setShowDatePicker(false);
     setShowRdvModal(true);
     if (!workshops.length) {
       try {
         setLoadingWorkshops(true);
-        const res = await apiRequest('/workshop/active');
+        // Use /workshop/all so the RDV picker shows every workshop in the
+        // database (including pending / not-yet-activated ones), not just the
+        // ones with status=true returned by /workshop/active.
+        const res = await apiRequest('/workshop/all');
         const data = await res.json().catch(() => null);
         if (res.ok && data?.ok && Array.isArray(data.workshops)) {
           setWorkshops(data.workshops);
@@ -1001,74 +1380,77 @@ export default function CarsScreen() {
     }
   };
 
-  // Filter and sort workshops
-  const filteredAndSortedWorkshops = useMemo(() => {
+  const wsHasLocation = useCallback(
+    (w: Workshop) => typeof w.locationLat === 'number' && typeof w.locationLng === 'number',
+    [],
+  );
+
+  const wsDistanceKm = useCallback(
+    (w: Workshop): number | null => {
+      if (userLat == null || userLng == null) return null;
+      if (!wsHasLocation(w)) return null;
+      return haversineKm(userLat, userLng, w.locationLat!, w.locationLng!);
+    },
+    [userLat, userLng, wsHasLocation],
+  );
+
+  const wsFormatDist = (km: number | null): string | null => {
+    if (km == null) return null;
+    if (km < 1) return `${Math.round(km * 1000)} m`;
+    return `${km.toFixed(1)} km`;
+  };
+
+  const rdvBaseFiltered = useMemo(() => {
     let filtered = [...workshops];
-
-    // Filter by name
-    if (workshopFilters.searchName.trim()) {
-      const searchLower = workshopFilters.searchName.toLowerCase();
-      filtered = filtered.filter(w => 
-        w.name.toLowerCase().includes(searchLower)
-      );
-    }
-
-    // Filter by address
-    if (workshopFilters.searchAdr.trim()) {
-      const searchLower = workshopFilters.searchAdr.toLowerCase();
-      filtered = filtered.filter(w => 
-        w.adr?.toLowerCase().includes(searchLower)
-      );
-    }
-
-    // Filter by certified only
-    if (workshopFilters.showCertifiedOnly) {
-      filtered = filtered.filter(w => w.certifie === true);
-    }
-
-    // Sort workshops
-    filtered.sort((a, b) => {
-      if (workshopFilters.sortBy === 'name') {
-        return a.name.localeCompare(b.name);
-      } else if (workshopFilters.sortBy === 'price_low') {
-        // Get minimum price (considering both mechanic and paint prices)
-        const getMinPrice = (w: Workshop) => {
-          const prices = [];
-          if (w.price_visit_mec) prices.push(w.price_visit_mec);
-          if (w.price_visit_paint) prices.push(w.price_visit_paint);
-          return prices.length > 0 ? Math.min(...prices) : Infinity;
-        };
-        const priceA = getMinPrice(a);
-        const priceB = getMinPrice(b);
-        if (priceA === priceB) return a.name.localeCompare(b.name);
-        return priceA - priceB;
-      } else if (workshopFilters.sortBy === 'price_high') {
-        // Get maximum price
-        const getMaxPrice = (w: Workshop) => {
-          const prices = [];
-          if (w.price_visit_mec) prices.push(w.price_visit_mec);
-          if (w.price_visit_paint) prices.push(w.price_visit_paint);
-          return prices.length > 0 ? Math.max(...prices) : -Infinity;
-        };
-        const priceA = getMaxPrice(a);
-        const priceB = getMaxPrice(b);
-        if (priceA === priceB) return a.name.localeCompare(b.name);
-        return priceB - priceA;
-      }
-      return 0;
-    });
-
+    const nameQ = workshopFilters.searchName.trim().toLowerCase();
+    const adrQ = workshopFilters.searchAdr.trim().toLowerCase();
+    if (nameQ) filtered = filtered.filter(w => w.name.toLowerCase().includes(nameQ));
+    if (adrQ) filtered = filtered.filter(w => w.adr?.toLowerCase().includes(adrQ));
+    if (workshopFilters.showCertifiedOnly) filtered = filtered.filter(w => w.certifie === true);
     return filtered;
   }, [workshops, workshopFilters]);
 
-  // Get workshop price display
-  const getWorkshopPrice = (workshop: Workshop): string => {
-    const prices = [];
-    if (workshop.price_visit_mec) prices.push(`Mécanique: ${workshop.price_visit_mec.toLocaleString()} DA`);
-    if (workshop.price_visit_paint) prices.push(`Peinture: ${workshop.price_visit_paint.toLocaleString()} DA`);
-    if (prices.length === 0) return 'Prix non disponible';
-    return prices.join(' • ');
-  };
+  const rdvNearestWorkshops = useMemo(() => {
+    const sellerR = normalizeRegion(userRegion);
+    return rdvBaseFiltered
+      .filter(w => wsHasLocation(w))
+      .sort((a, b) => {
+        const aMatch = !!(sellerR && normalizeRegion(a.locationRegion ?? undefined) === sellerR);
+        const bMatch = !!(sellerR && normalizeRegion(b.locationRegion ?? undefined) === sellerR);
+        if (sellerR) {
+          if (aMatch && !bMatch) return -1;
+          if (!aMatch && bMatch) return 1;
+        }
+        const da = wsDistanceKm(a);
+        const db = wsDistanceKm(b);
+        if (da != null && db != null && da !== db) return da - db;
+        if (da != null && db == null) return -1;
+        if (da == null && db != null) return 1;
+        return a.name.localeCompare(b.name);
+      });
+  }, [rdvBaseFiltered, userRegion, wsDistanceKm, wsHasLocation]);
+
+  const rdvRealTimeWorkshops = useMemo(
+    () => rdvBaseFiltered.filter(w => !!w.real_time).sort((a, b) => a.name.localeCompare(b.name)),
+    [rdvBaseFiltered],
+  );
+
+  const rdvOtherWorkshops = useMemo(() => {
+    const nearIds = new Set(rdvNearestWorkshops.map(w => String(w._id || w.id)));
+    const rtIds = new Set(rdvRealTimeWorkshops.map(w => String(w._id || w.id)));
+    return rdvBaseFiltered
+      .filter(w => {
+        const wId = String(w._id || w.id);
+        return !nearIds.has(wId) && !rtIds.has(wId);
+      })
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [rdvBaseFiltered, rdvNearestWorkshops, rdvRealTimeWorkshops]);
+
+  const rdvSectionData = useMemo(() => {
+    if (rdvWorkshopSection === 'nearest') return rdvNearestWorkshops;
+    if (rdvWorkshopSection === 'real_time') return rdvRealTimeWorkshops;
+    return rdvOtherWorkshops;
+  }, [rdvWorkshopSection, rdvNearestWorkshops, rdvRealTimeWorkshops, rdvOtherWorkshops]);
 
   const fetchAvailableTimes = async (workshopId: string, date: string) => {
     if (!workshopId || !date) return;
@@ -1278,21 +1660,21 @@ export default function CarsScreen() {
               </TouchableOpacity>
 
               <TouchableOpacity
-                onPress={() => setRdvFilter('temoignages')}
+                onPress={() => setRdvFilter('sponsor')}
                 style={styles.filterButton}
                 activeOpacity={0.7}
               >
                 <LinearGradient
-                  colors={rdvFilter === 'temoignages' ? ['#9333ea', '#7c3aed'] : ['#f3f4f6', '#e5e7eb']}
+                  colors={rdvFilter === 'sponsor' ? ['#9333ea', '#7c3aed'] : ['#f3f4f6', '#e5e7eb']}
                   style={styles.filterButtonGradient}
                 >
-                  <IconSymbol 
-                    name="star.fill" 
-                    size={scale(16)} 
-                    color={rdvFilter === 'temoignages' ? '#ffffff' : '#6b7280'} 
+                  <IconSymbol
+                    name="star.fill"
+                    size={scale(16)}
+                    color={rdvFilter === 'sponsor' ? '#ffffff' : '#6b7280'}
                   />
-                  <ThemedText style={[styles.filterButtonText, rdvFilter === 'temoignages' && styles.filterButtonTextActive]}>
-                    {t('cars.filtersTabs.testimonials')}
+                  <ThemedText style={[styles.filterButtonText, rdvFilter === 'sponsor' && styles.filterButtonTextActive]}>
+                    {t('cars.filtersTabs.sponsor')}
                   </ThemedText>
                 </LinearGradient>
               </TouchableOpacity>
@@ -1307,23 +1689,159 @@ export default function CarsScreen() {
               <ActivityIndicator size="large" color="#0d9488" />
               <ThemedText style={styles.loadingText}>{t('cars.loading')}</ThemedText>
             </View>
+          ) : rdvFilter === 'sponsor' ? (
+            <View>
+              {/* Always-visible "+ Create Sponsor" button at the top of the section */}
+              <TouchableOpacity
+                style={styles.createSponsorBtn}
+                activeOpacity={0.85}
+                onPress={openCreateSponsorModal}
+              >
+                <LinearGradient colors={['#9333ea', '#7c3aed']} style={styles.createSponsorBtnGradient}>
+                  <IconSymbol name="plus.circle.fill" size={scale(20)} color="#ffffff" />
+                  <ThemedText style={styles.createSponsorBtnText}>{t('cars.sponsor.createButton')}</ThemedText>
+                </LinearGradient>
+              </TouchableOpacity>
+
+              {sponsors.length === 0 ? (
+                <View style={styles.emptyBox}>
+                  <IconSymbol name="star.fill" size={scale(52)} color="#94a3b8" />
+                  <ThemedText style={styles.emptyTitle}>{t('cars.empty.sponsor')}</ThemedText>
+                  <ThemedText style={styles.emptyText}>{t('cars.empty.sponsorHint')}</ThemedText>
+                </View>
+              ) : (
+                <View style={styles.list}>
+                  {sponsors.map((s) => {
+                  const populated = typeof s.id_car === 'object' && s.id_car !== null
+                    ? (s.id_car as Partial<Car> & { _id: string })
+                    : null;
+                  const carId = populated?._id || (typeof s.id_car === 'string' ? s.id_car : '');
+                  const img =
+                    populated?.images && populated.images[0] ? getImageUrl(populated.images[0]) : null;
+                  const active = isSponsorActive(s);
+                  const expired = !active && s.status === false;
+                  const remaining = formatTimeRemaining(s.end_date);
+                  const startStr = formatLocalDate(s.start_date);
+                  const endStr = formatLocalDate(s.end_date);
+
+                  return (
+                    <View key={s._id} style={styles.card}>
+                      <View style={styles.cardImageWrap}>
+                        {img ? (
+                          <Image source={{ uri: img }} style={styles.cardImage} resizeMode="cover" />
+                        ) : (
+                          <View style={styles.cardImagePlaceholder}>
+                            <IconSymbol name="photo" size={scale(34)} color="#94a3b8" />
+                            <ThemedText style={styles.cardImagePlaceholderText}>{t('cars.noImage')}</ThemedText>
+                          </View>
+                        )}
+
+                        <View style={styles.badgesRow}>
+                          <LinearGradient
+                            colors={active ? ['#9333ea', '#7c3aed'] : ['#64748b', '#475569']}
+                            style={styles.badge}
+                          >
+                            <ThemedText style={styles.badgeText}>
+                              {active ? t('cars.sponsor.active') : t('cars.sponsor.inactive')}
+                            </ThemedText>
+                          </LinearGradient>
+                          {populated?.year != null ? (
+                            <View style={styles.yearPill}>
+                              <ThemedText style={styles.yearPillText}>{populated.year}</ThemedText>
+                            </View>
+                          ) : null}
+                        </View>
+                      </View>
+
+                      <View style={styles.cardBody}>
+                        <ThemedText style={styles.cardTitle}>
+                          {populated ? `${populated.brand ?? ''} ${populated.model ?? ''}`.trim() : t('cars.unknownCar')}
+                        </ThemedText>
+
+                        <View style={styles.sponsorInfoBox}>
+                          <View style={styles.sponsorInfoRow}>
+                            <IconSymbol name="calendar" size={scale(16)} color="#7c3aed" />
+                            <ThemedText style={styles.sponsorInfoLabel}>{t('cars.sponsor.startDate')}</ThemedText>
+                            <ThemedText style={styles.sponsorInfoValue}>{startStr}</ThemedText>
+                          </View>
+                          <View style={styles.sponsorInfoRow}>
+                            <IconSymbol name="calendar" size={scale(16)} color="#7c3aed" />
+                            <ThemedText style={styles.sponsorInfoLabel}>{t('cars.sponsor.endDate')}</ThemedText>
+                            <ThemedText style={styles.sponsorInfoValue}>{endStr}</ThemedText>
+                          </View>
+                          <View style={styles.sponsorInfoRow}>
+                            <IconSymbol name="clock.fill" size={scale(16)} color="#7c3aed" />
+                            <ThemedText style={styles.sponsorInfoLabel}>{t('cars.sponsor.duration')}</ThemedText>
+                            <ThemedText style={styles.sponsorInfoValue}>
+                              {s.duration} {t('cars.sponsor.daysShort')}
+                            </ThemedText>
+                          </View>
+                          {s.price > 0 ? (
+                            <View style={styles.sponsorInfoRow}>
+                              <IconSymbol name="tag.fill" size={scale(16)} color="#7c3aed" />
+                              <ThemedText style={styles.sponsorInfoLabel}>{t('cars.sponsor.price')}</ThemedText>
+                              <ThemedText style={styles.sponsorInfoValue}>
+                                {s.price.toLocaleString()} {t('home.priceCurrency')}
+                              </ThemedText>
+                            </View>
+                          ) : null}
+                        </View>
+
+                        <View style={[styles.sponsorRemainingBox, !active && styles.sponsorRemainingBoxExpired]}>
+                          <IconSymbol
+                            name={active ? 'clock.fill' : 'exclamationmark.triangle.fill'}
+                            size={scale(18)}
+                            color={active ? '#7c3aed' : '#94a3b8'}
+                          />
+                          <View style={{ flex: 1 }}>
+                            <ThemedText style={styles.sponsorRemainingLabel}>
+                              {active ? t('cars.sponsor.timeRemaining') : t('cars.sponsor.statusLabel')}
+                            </ThemedText>
+                            <ThemedText
+                              style={[styles.sponsorRemainingValue, !active && styles.sponsorRemainingValueExpired]}
+                            >
+                              {active
+                                ? remaining
+                                : expired
+                                ? t('cars.sponsor.expired')
+                                : t('cars.sponsor.cancelled')}
+                            </ThemedText>
+                          </View>
+                        </View>
+
+                        {carId ? (
+                          <View style={styles.actionsRow}>
+                            <TouchableOpacity
+                              style={styles.secondaryBtn}
+                              activeOpacity={0.85}
+                              onPress={() => router.push(`/car/${carId}`)}
+                            >
+                              <IconSymbol name="doc.text.fill" size={scale(18)} color="#0d9488" />
+                              <ThemedText style={styles.secondaryBtnText}>{t('common.details')}</ThemedText>
+                            </TouchableOpacity>
+                          </View>
+                        ) : null}
+                      </View>
+                    </View>
+                  );
+                })}
+                </View>
+              )}
+            </View>
           ) : filteredCars.length === 0 ? (
             <View style={styles.emptyBox}>
               <IconSymbol name="car" size={scale(52)} color="#94a3b8" />
               <ThemedText style={styles.emptyTitle}>
-                {rdvFilter === 'with_rdv' ? t('cars.empty.withRdv') : 
-                 rdvFilter === 'without_rdv' ? t('cars.empty.withoutRdv') : 
+                {rdvFilter === 'with_rdv' ? t('cars.empty.withRdv') :
+                 rdvFilter === 'without_rdv' ? t('cars.empty.withoutRdv') :
                  rdvFilter === 'termine' ? t('cars.empty.finished') :
-                 rdvFilter === 'temoignages' ? t('cars.empty.testimonials') :
                  t('cars.empty.default')}
               </ThemedText>
               <ThemedText style={styles.emptyText}>
-                {rdvFilter === 'all' 
+                {rdvFilter === 'all'
                   ? t('cars.empty.allHint')
                   : rdvFilter === 'termine'
                   ? t('cars.empty.finishedHint')
-                  : rdvFilter === 'temoignages'
-                  ? t('cars.empty.testimonialsHint')
                   : t('cars.empty.otherHint')}
               </ThemedText>
               {rdvFilter === 'all' && (
@@ -1334,132 +1852,6 @@ export default function CarsScreen() {
                   </LinearGradient>
                 </TouchableOpacity>
               )}
-            </View>
-          ) : rdvFilter === 'temoignages' ? (
-            // Témoignages Section - Special display for testimonials
-            <View style={styles.temoignagesContainer}>
-              <Animated.View entering={FadeInDown.duration(600)} style={styles.temoignagesHeader}>
-                <LinearGradient
-                  colors={['#f3e8ff', '#e9d5ff', '#fce7f3']}
-                  style={styles.temoignagesHeaderGradient}
-                >
-                  <View style={styles.temoignagesHeaderContent}>
-                    <View style={styles.temoignagesIconContainer}>
-                      <LinearGradient
-                        colors={['#9333ea', '#7c3aed']}
-                        style={styles.temoignagesIconGradient}
-                      >
-                        <IconSymbol name="star.fill" size={scale(28)} color="#ffffff" />
-                      </LinearGradient>
-                    </View>
-                    <View style={styles.temoignagesHeaderText}>
-                      <ThemedText style={styles.temoignagesTitle}>{t('cars.filtersTabs.testimonials')}</ThemedText>
-                      <ThemedText style={styles.temoignagesSubtitle}>
-                        Voitures certifiées avec vérification terminée
-                      </ThemedText>
-                    </View>
-                  </View>
-                </LinearGradient>
-              </Animated.View>
-
-              <View style={styles.temoignagesList}>
-                {filteredCars.map((car, index) => {
-                  if (!car) return null;
-                  const carId = car._id?.toString?.() || car.id || '';
-                  const img = car.images && Array.isArray(car.images) && car.images[0] ? getImageUrl(car.images[0]) : null;
-                  const apts = appointmentsByCarId.get(carId) || [];
-                  const finishedApts = apts.filter((apt) => apt.status === 'finish');
-                  const latestFinished = finishedApts[0];
-                  const workshopName = latestFinished?.id_workshop?.name || latestFinished?.id_workshop?.email || 'Atelier';
-
-                  return (
-                    <Animated.View
-                      key={carId}
-                      entering={FadeInDown.duration(600).delay(index * 100)}
-                      style={styles.temoignageCard}
-                    >
-                      <LinearGradient
-                        colors={['rgba(255, 255, 255, 0.98)', 'rgba(255, 255, 255, 0.95)']}
-                        style={styles.temoignageCardGradient}
-                      >
-                        {/* Car Image */}
-                        <View style={styles.temoignageImageContainer}>
-                          {img ? (
-                            <Image source={{ uri: img }} style={styles.temoignageImage} resizeMode="cover" />
-                          ) : (
-                            <View style={styles.temoignageImagePlaceholder}>
-                              <IconSymbol name="car.fill" size={scale(40)} color="#94a3b8" />
-                            </View>
-                          )}
-                          <View style={styles.temoignageBadge}>
-                            <LinearGradient colors={['#22c55e', '#16a34a']} style={styles.temoignageBadgeGradient}>
-                              <IconSymbol name="checkmark.seal.fill" size={scale(16)} color="#ffffff" />
-                              <ThemedText style={styles.temoignageBadgeText}>Certifié</ThemedText>
-                            </LinearGradient>
-                          </View>
-                        </View>
-
-                        {/* Car Info */}
-                        <View style={styles.temoignageInfo}>
-                          <ThemedText style={styles.temoignageCarName}>
-                            {car.brand} {car.model}
-                          </ThemedText>
-                          <ThemedText style={styles.temoignageCarYear}>{car.year}</ThemedText>
-
-                          <View style={styles.temoignageDetails}>
-                            <View style={styles.temoignageDetailItem}>
-                              <IconSymbol name="speedometer" size={scale(16)} color="#9333ea" />
-                              <ThemedText style={styles.temoignageDetailText}>
-                                {car.km?.toLocaleString?.() || car.km} km
-                              </ThemedText>
-                            </View>
-                            <View style={styles.temoignageDetailItem}>
-                              <IconSymbol name="tag.fill" size={scale(16)} color="#9333ea" />
-                              <ThemedText style={styles.temoignageDetailText}>
-                                {car.price?.toLocaleString?.() || car.price} DA
-                              </ThemedText>
-                            </View>
-                          </View>
-
-                          {/* Workshop Verification Info */}
-                          {latestFinished && (
-                            <View style={styles.temoignageVerification}>
-                              <View style={styles.temoignageVerificationHeader}>
-                                <IconSymbol name="shield.checkered" size={scale(18)} color="#9333ea" />
-                                <ThemedText style={styles.temoignageVerificationTitle}>
-                                  Vérifié par
-                                </ThemedText>
-                              </View>
-                              <ThemedText style={styles.temoignageWorkshopName}>{workshopName}</ThemedText>
-                              {latestFinished.date && (
-                                <ThemedText style={styles.temoignageDate}>
-                                  {new Date(latestFinished.date).toLocaleDateString('fr-FR', {
-                                    day: 'numeric',
-                                    month: 'long',
-                                    year: 'numeric'
-                                  })}
-                                </ThemedText>
-                              )}
-                            </View>
-                          )}
-
-                          {/* Action Button */}
-                          <TouchableOpacity
-                            style={styles.temoignageViewButton}
-                            activeOpacity={0.85}
-                            onPress={() => router.push(`/car/${carId}`)}
-                          >
-                            <LinearGradient colors={['#9333ea', '#7c3aed']} style={styles.temoignageViewButtonGradient}>
-                              <IconSymbol name="doc.text.fill" size={scale(18)} color="#ffffff" />
-                              <ThemedText style={styles.temoignageViewButtonText}>Voir les détails</ThemedText>
-                            </LinearGradient>
-                          </TouchableOpacity>
-                        </View>
-                      </LinearGradient>
-                    </Animated.View>
-                  );
-                })}
-              </View>
             </View>
           ) : (
             <View style={styles.list}>
@@ -1472,6 +1864,8 @@ export default function CarsScreen() {
                 const latest = apts[0];
                 const rdvMeta = latest ? (rdvStatusMeta[latest.status] || { label: latest.status, colors: ['#64748b', '#475569'] as [string, string] }) : null;
                 const workshopName = latest?.id_workshop?.name || latest?.id_workshop?.email || t('workshops.title');
+                const carSponsor = sponsorsByCarId.get(carId);
+                const carSponsorActive = !!carSponsor && isSponsorActive(carSponsor);
 
                 return (
                   <View key={carId} style={styles.card}>
@@ -1489,6 +1883,12 @@ export default function CarsScreen() {
                         <LinearGradient colors={meta.colors} style={styles.badge}>
                           <ThemedText style={styles.badgeText}>{meta.label}</ThemedText>
                         </LinearGradient>
+                        {carSponsorActive ? (
+                          <LinearGradient colors={['#9333ea', '#7c3aed']} style={styles.sponsorPill}>
+                            <IconSymbol name="star.fill" size={scale(12)} color="#ffffff" />
+                            <ThemedText style={styles.sponsorPillText}>{t('cars.sponsor.activeBadge')}</ThemedText>
+                          </LinearGradient>
+                        ) : null}
                         <View style={styles.yearPill}>
                           <ThemedText style={styles.yearPillText}>{car.year}</ThemedText>
                         </View>
@@ -1849,13 +2249,34 @@ export default function CarsScreen() {
 
                 <View style={styles.formField}>
                   <ThemedText style={styles.label}>{t('cars.form.color')}</ThemedText>
-                  <TextInput
-                    value={carForm.color}
-                    onChangeText={(t) => setCarForm((p) => ({ ...p, color: t }))}
-                    placeholder={t('cars.placeholders.colorExample')}
-                    placeholderTextColor="#94a3b8"
-                    style={styles.input}
-                  />
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPress={() => setShowColorPicker(true)}
+                    style={styles.selectInput}
+                  >
+                    <ThemedText style={[styles.selectInputText, !carForm.color && styles.selectInputPlaceholder]}>
+                      {showCustomColor
+                        ? customColor || t('cars.placeholders.colorExample')
+                        : carForm.color || t('cars.selectColor')}
+                    </ThemedText>
+                    {loadingColors ? (
+                      <ActivityIndicator size="small" color="#0d9488" />
+                    ) : (
+                      <IconSymbol name="chevron.down" size={scale(18)} color="#64748b" />
+                    )}
+                  </TouchableOpacity>
+                  {showCustomColor && (
+                    <TextInput
+                      value={customColor}
+                      onChangeText={(t) => {
+                        setCustomColor(t);
+                        setCarForm((p) => ({ ...p, color: t }));
+                      }}
+                      placeholder={t('cars.placeholders.colorExample')}
+                      placeholderTextColor="#94a3b8"
+                      style={[styles.input, { marginTop: padding.small }]}
+                    />
+                  )}
                 </View>
                 <View style={styles.formField}>
                   <ThemedText style={styles.label}>{t('cars.form.doors')}</ThemedText>
@@ -2014,6 +2435,315 @@ export default function CarsScreen() {
         </TouchableOpacity>
       </Modal>
 
+      {/* Color Picker Modal (options come from backend table `Color`) */}
+      <Modal visible={showColorPicker} transparent animationType="fade" onRequestClose={() => setShowColorPicker(false)}>
+        <TouchableOpacity
+          style={styles.modalBackdrop}
+          activeOpacity={1}
+          onPress={() => setShowColorPicker(false)}
+        >
+          <View style={styles.brandPickerSheet}>
+            <View style={styles.modalHeader}>
+              <ThemedText style={styles.modalTitle}>{t('cars.selectColor')}</ThemedText>
+              <TouchableOpacity onPress={() => setShowColorPicker(false)} style={styles.modalClose} activeOpacity={0.85}>
+                <IconSymbol name="xmark" size={scale(18)} color="#64748b" />
+              </TouchableOpacity>
+            </View>
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {loadingColors ? (
+                <View style={{ paddingVertical: padding.large, alignItems: 'center' }}>
+                  <ActivityIndicator size="large" color="#0d9488" />
+                </View>
+              ) : availableColors.length === 0 ? (
+                <View style={{ paddingVertical: padding.large, alignItems: 'center' }}>
+                  <ThemedText style={{ color: '#64748b' }}>{t('cars.noColorsAvailable')}</ThemedText>
+                </View>
+              ) : (
+                availableColors.map((c) => (
+                  <TouchableOpacity
+                    key={c.id}
+                    style={styles.brandOption}
+                    onPress={() => {
+                      setCarForm((p) => ({ ...p, color: c.name }));
+                      setShowCustomColor(false);
+                      setCustomColor('');
+                      setShowColorPicker(false);
+                    }}
+                    activeOpacity={0.85}
+                  >
+                    <ThemedText style={styles.brandOptionText}>{c.name}</ThemedText>
+                  </TouchableOpacity>
+                ))
+              )}
+              <TouchableOpacity
+                style={styles.brandOption}
+                onPress={() => {
+                  setShowCustomColor(true);
+                  setCarForm((p) => ({ ...p, color: '' }));
+                  setCustomColor('');
+                  setShowColorPicker(false);
+                }}
+                activeOpacity={0.85}
+              >
+                <ThemedText style={styles.brandOptionText}>{t('cars.colorOther')}</ThemedText>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Create Sponsor Modal -------------------------------------------- */}
+      <Modal
+        visible={showCreateSponsorModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowCreateSponsorModal(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalSheet}>
+            <View style={styles.modalHeader}>
+              <ThemedText style={styles.modalTitle}>{t('cars.sponsor.createTitle')}</ThemedText>
+              <TouchableOpacity
+                onPress={() => setShowCreateSponsorModal(false)}
+                style={styles.modalClose}
+                activeOpacity={0.85}
+              >
+                <IconSymbol name="xmark" size={scale(18)} color="#64748b" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: padding.large }}>
+              {/* Step 1 — Pick the car ---------------------------------- */}
+              <ThemedText style={styles.label}>{t('cars.sponsor.selectCar')}</ThemedText>
+              {loadingSponsorableCars ? (
+                <View style={{ paddingVertical: padding.medium, alignItems: 'center' }}>
+                  <ActivityIndicator color="#9333ea" />
+                </View>
+              ) : sponsorableCars.length === 0 ? (
+                <View style={styles.sponsorEmptyInline}>
+                  <IconSymbol name="car" size={scale(28)} color="#94a3b8" />
+                  <ThemedText style={styles.sponsorEmptyInlineText}>
+                    {t('cars.sponsor.noEligibleCars')}
+                  </ThemedText>
+                </View>
+              ) : (
+                <View style={{ gap: padding.small }}>
+                  {sponsorableCars.map((car) => {
+                    const selected = selectedSponsorCarId === car.id;
+                    const img = car.images && car.images[0] ? getImageUrl(car.images[0]) : null;
+                    const previousEnd = car.previous_sponsor_end_date
+                      ? formatLocalDate(car.previous_sponsor_end_date)
+                      : null;
+                    return (
+                      <TouchableOpacity
+                        key={car.id}
+                        activeOpacity={0.85}
+                        onPress={() => setSelectedSponsorCarId(car.id)}
+                        style={[styles.sponsorPickerCar, selected && styles.sponsorPickerCarSelected]}
+                      >
+                        <View style={styles.sponsorPickerCarImageWrap}>
+                          {img ? (
+                            <Image source={{ uri: img }} style={styles.sponsorPickerCarImage} resizeMode="cover" />
+                          ) : (
+                            <View style={[styles.sponsorPickerCarImage, styles.cardImagePlaceholder]}>
+                              <IconSymbol name="photo" size={scale(20)} color="#94a3b8" />
+                            </View>
+                          )}
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <ThemedText style={styles.sponsorPickerCarTitle}>
+                            {`${car.brand ?? ''} ${car.model ?? ''}`.trim() || t('cars.unknownCar')}
+                            {car.year ? ` • ${car.year}` : ''}
+                          </ThemedText>
+                          {previousEnd ? (
+                            <View style={styles.sponsorPickerHintRow}>
+                              <IconSymbol name="clock.fill" size={scale(12)} color="#94a3b8" />
+                              <ThemedText style={styles.sponsorPickerHintText}>
+                                {t('cars.sponsor.previousSponsorEnded', { date: previousEnd })}
+                              </ThemedText>
+                            </View>
+                          ) : (
+                            <ThemedText style={styles.sponsorPickerHintText}>
+                              {t('cars.sponsor.neverSponsored')}
+                            </ThemedText>
+                          )}
+                        </View>
+                        <View style={[styles.sponsorPickerRadio, selected && styles.sponsorPickerRadioSelected]}>
+                          {selected ? (
+                            <IconSymbol name="checkmark" size={scale(14)} color="#ffffff" />
+                          ) : null}
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              )}
+
+              {/* Step 2 — Pick the plan --------------------------------- */}
+              <ThemedText style={[styles.label, { marginTop: padding.medium }]}>
+                {t('cars.sponsor.selectPlan')}
+              </ThemedText>
+              {loadingSponsorPlans ? (
+                <View style={{ paddingVertical: padding.medium, alignItems: 'center' }}>
+                  <ActivityIndicator color="#9333ea" />
+                </View>
+              ) : sponsorPlans.length === 0 ? (
+                <View style={styles.sponsorEmptyInline}>
+                  <IconSymbol name="tag.fill" size={scale(24)} color="#94a3b8" />
+                  <ThemedText style={styles.sponsorEmptyInlineText}>
+                    {t('cars.sponsor.noPlans')}
+                  </ThemedText>
+                </View>
+              ) : (
+                <View style={styles.sponsorPlanGrid}>
+                  {sponsorPlans.map((plan) => {
+                    const selected = selectedSponsorPlanId === plan.id;
+                    return (
+                      <TouchableOpacity
+                        key={plan.id}
+                        activeOpacity={0.85}
+                        onPress={() => setSelectedSponsorPlanId(plan.id)}
+                        style={[styles.sponsorPlanCard, selected && styles.sponsorPlanCardSelected]}
+                      >
+                        <ThemedText
+                          style={[styles.sponsorPlanDuration, selected && styles.sponsorPlanDurationSelected]}
+                        >
+                          {plan.duration} {t('cars.sponsor.daysShort')}
+                        </ThemedText>
+                        <ThemedText
+                          style={[styles.sponsorPlanPrice, selected && styles.sponsorPlanPriceSelected]}
+                        >
+                          {plan.price.toLocaleString()} {t('home.priceCurrency')}
+                        </ThemedText>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              )}
+
+              {/* Submit ------------------------------------------------- */}
+              <TouchableOpacity
+                style={[styles.submitBtn, { marginTop: padding.large }]}
+                activeOpacity={0.9}
+                onPress={submitCreateSponsor}
+                disabled={
+                  creatingSponsor ||
+                  !selectedSponsorCarId ||
+                  !selectedSponsorPlanId
+                }
+              >
+                <LinearGradient colors={['#9333ea', '#7c3aed']} style={styles.submitBtnGradient}>
+                  {creatingSponsor ? (
+                    <ActivityIndicator color="#ffffff" />
+                  ) : (
+                    <IconSymbol name="checkmark.circle.fill" size={scale(18)} color="#ffffff" />
+                  )}
+                  <ThemedText style={styles.submitBtnText}>
+                    {creatingSponsor
+                      ? t('cars.sponsor.creatingSponsor')
+                      : t('cars.sponsor.confirmCreate')}
+                  </ThemedText>
+                </LinearGradient>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Sponsor Payment Modal -------------------------------------------- */}
+      <Modal
+        visible={showSponsorPaymentModal}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!payingNow) {
+            setShowSponsorPaymentModal(false);
+            setPaymentSummary({ car: null, plan: null });
+            setPaymentDone(false);
+          }
+        }}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.paymentCard}>
+            {paymentDone ? (
+              <>
+                <View style={styles.paymentSuccessIconWrap}>
+                  <IconSymbol name="checkmark.seal.fill" size={scale(56)} color="#22c55e" />
+                </View>
+                <ThemedText style={styles.paymentTitle}>{t('cars.sponsor.paymentSuccess')}</ThemedText>
+                <ThemedText style={styles.paymentSub}>
+                  {t('cars.sponsor.paymentSuccessHint')}
+                </ThemedText>
+                <TouchableOpacity
+                  style={[styles.submitBtn, { marginTop: padding.medium }]}
+                  activeOpacity={0.9}
+                  onPress={handlePayNow}
+                >
+                  <LinearGradient colors={['#22c55e', '#16a34a']} style={styles.submitBtnGradient}>
+                    <IconSymbol name="checkmark" size={scale(18)} color="#ffffff" />
+                    <ThemedText style={styles.submitBtnText}>{t('common.close')}</ThemedText>
+                  </LinearGradient>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <>
+                <View style={styles.paymentHeader}>
+                  <IconSymbol name="tag.fill" size={scale(28)} color="#7c3aed" />
+                  <ThemedText style={styles.paymentTitle}>{t('cars.sponsor.payTitle')}</ThemedText>
+                </View>
+
+                {paymentSummary.car ? (
+                  <View style={styles.paymentSummaryRow}>
+                    <IconSymbol name="car.fill" size={scale(16)} color="#64748b" />
+                    <ThemedText style={styles.paymentSummaryLabel}>{t('cars.sponsor.payCar')}</ThemedText>
+                    <ThemedText style={styles.paymentSummaryValue}>
+                      {`${paymentSummary.car.brand ?? ''} ${paymentSummary.car.model ?? ''}`.trim() || t('cars.unknownCar')}
+                    </ThemedText>
+                  </View>
+                ) : null}
+                {paymentSummary.plan ? (
+                  <>
+                    <View style={styles.paymentSummaryRow}>
+                      <IconSymbol name="clock.fill" size={scale(16)} color="#64748b" />
+                      <ThemedText style={styles.paymentSummaryLabel}>{t('cars.sponsor.duration')}</ThemedText>
+                      <ThemedText style={styles.paymentSummaryValue}>
+                        {paymentSummary.plan.duration} {t('cars.sponsor.daysShort')}
+                      </ThemedText>
+                    </View>
+                    <View style={styles.paymentTotalRow}>
+                      <ThemedText style={styles.paymentTotalLabel}>{t('cars.sponsor.payTotal')}</ThemedText>
+                      <ThemedText style={styles.paymentTotalValue}>
+                        {paymentSummary.plan.price.toLocaleString()} {t('home.priceCurrency')}
+                      </ThemedText>
+                    </View>
+                  </>
+                ) : null}
+
+                <ThemedText style={styles.paymentNote}>{t('cars.sponsor.payNote')}</ThemedText>
+
+                <TouchableOpacity
+                  style={[styles.submitBtn, { marginTop: padding.medium }]}
+                  activeOpacity={0.9}
+                  onPress={handlePayNow}
+                  disabled={payingNow}
+                >
+                  <LinearGradient colors={['#9333ea', '#7c3aed']} style={styles.submitBtnGradient}>
+                    {payingNow ? (
+                      <ActivityIndicator color="#ffffff" />
+                    ) : (
+                      <IconSymbol name="lock.fill" size={scale(18)} color="#ffffff" />
+                    )}
+                    <ThemedText style={styles.submitBtnText}>
+                      {payingNow ? t('cars.sponsor.processing') : t('cars.sponsor.payButton')}
+                    </ThemedText>
+                  </LinearGradient>
+                </TouchableOpacity>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
+
       {/* RDV Modal */}
       <Modal visible={showRdvModal} transparent animationType="slide" onRequestClose={() => { setShowRdvModal(false); setShowDatePicker(false); }}>
         <View style={styles.modalBackdrop}>
@@ -2035,9 +2765,9 @@ export default function CarsScreen() {
                 </View>
               ) : null}
 
-              <ThemedText style={styles.label}>Atelier *</ThemedText>
-              
-              {/* Workshop Filters */}
+              <ThemedText style={styles.label}>{t('cars.rdvWorkshopLabel')} *</ThemedText>
+
+              {/* Search + certified filter */}
               <View style={styles.workshopFiltersContainer}>
                 <View style={styles.filterRow}>
                   <TextInput
@@ -2055,7 +2785,7 @@ export default function CarsScreen() {
                     style={styles.filterInput}
                   />
                 </View>
-                
+
                 <View style={styles.filterChipsRow}>
                   <TouchableOpacity
                     activeOpacity={0.85}
@@ -2064,44 +2794,94 @@ export default function CarsScreen() {
                   >
                     <IconSymbol name={workshopFilters.showCertifiedOnly ? "checkmark.seal.fill" : "checkmark.seal"} size={scale(16)} color={workshopFilters.showCertifiedOnly ? "#ffffff" : "#0d9488"} />
                     <ThemedText style={[styles.filterChipText, workshopFilters.showCertifiedOnly && styles.filterChipTextActive]}>
-                      Certifiés uniquement
+                      {t('cars.rdvCertifiedOnly')}
                     </ThemedText>
                   </TouchableOpacity>
                 </View>
+              </View>
 
-                <View style={styles.sortRow}>
-                  <ThemedText style={styles.sortLabel}>Trier par:</ThemedText>
-                  <View style={styles.sortChipsRow}>
-                    {[
-                      { key: 'name', label: 'Nom' },
-                      { key: 'price_low', label: 'Prix ↑' },
-                      { key: 'price_high', label: 'Prix ↓' },
-                    ].map((option) => (
-                      <TouchableOpacity
-                        key={option.key}
-                        activeOpacity={0.85}
-                        onPress={() => setWorkshopFilters((p) => ({ ...p, sortBy: option.key as any }))}
-                        style={[styles.sortChip, workshopFilters.sortBy === option.key && styles.sortChipActive]}
-                      >
-                        <ThemedText style={[styles.sortChipText, workshopFilters.sortBy === option.key && styles.sortChipTextActive]}>
-                          {option.label}
-                        </ThemedText>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                </View>
+              {/* Section tabs: Nearest / Real-time / Other */}
+              <View style={styles.rdvSectionTabs}>
+                <TouchableOpacity
+                  onPress={() => setRdvWorkshopSection('nearest')}
+                  style={styles.rdvSectionTab}
+                  activeOpacity={0.85}
+                >
+                  <LinearGradient
+                    colors={rdvWorkshopSection === 'nearest' ? ['#0d9488', '#14b8a6'] : ['#f1f5f9', '#e2e8f0']}
+                    style={styles.rdvSectionTabGrad}
+                  >
+                    <IconSymbol name="location.fill" size={scale(16)} color={rdvWorkshopSection === 'nearest' ? '#fff' : '#0d9488'} />
+                    <ThemedText style={[styles.rdvSectionTabText, rdvWorkshopSection === 'nearest' && styles.rdvSectionTabTextActive]} numberOfLines={1}>
+                      {t('workshops.sectionNearest')}
+                    </ThemedText>
+                    <View style={[styles.rdvSectionCount, rdvWorkshopSection === 'nearest' && styles.rdvSectionCountActive]}>
+                      <ThemedText style={[styles.rdvSectionCountText, rdvWorkshopSection === 'nearest' && styles.rdvSectionCountTextActive]}>
+                        {rdvNearestWorkshops.length}
+                      </ThemedText>
+                    </View>
+                  </LinearGradient>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={() => setRdvWorkshopSection('real_time')}
+                  style={styles.rdvSectionTab}
+                  activeOpacity={0.85}
+                >
+                  <LinearGradient
+                    colors={rdvWorkshopSection === 'real_time' ? ['#10b981', '#059669'] : ['#f1f5f9', '#e2e8f0']}
+                    style={styles.rdvSectionTabGrad}
+                  >
+                    <IconSymbol name="bolt.fill" size={scale(16)} color={rdvWorkshopSection === 'real_time' ? '#fff' : '#10b981'} />
+                    <ThemedText style={[styles.rdvSectionTabText, rdvWorkshopSection === 'real_time' && styles.rdvSectionTabTextActive]} numberOfLines={1}>
+                      {t('workshops.sectionRealTime')}
+                    </ThemedText>
+                    <View style={[styles.rdvSectionCount, rdvWorkshopSection === 'real_time' && styles.rdvSectionCountActive]}>
+                      <ThemedText style={[styles.rdvSectionCountText, rdvWorkshopSection === 'real_time' && styles.rdvSectionCountTextActive]}>
+                        {rdvRealTimeWorkshops.length}
+                      </ThemedText>
+                    </View>
+                  </LinearGradient>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={() => setRdvWorkshopSection('other')}
+                  style={styles.rdvSectionTab}
+                  activeOpacity={0.85}
+                >
+                  <LinearGradient
+                    colors={rdvWorkshopSection === 'other' ? ['#3b82f6', '#6366f1'] : ['#f1f5f9', '#e2e8f0']}
+                    style={styles.rdvSectionTabGrad}
+                  >
+                    <IconSymbol name="building.2.fill" size={scale(16)} color={rdvWorkshopSection === 'other' ? '#fff' : '#3b82f6'} />
+                    <ThemedText style={[styles.rdvSectionTabText, rdvWorkshopSection === 'other' && styles.rdvSectionTabTextActive]} numberOfLines={1}>
+                      {t('workshops.sectionOther')}
+                    </ThemedText>
+                    <View style={[styles.rdvSectionCount, rdvWorkshopSection === 'other' && styles.rdvSectionCountActive]}>
+                      <ThemedText style={[styles.rdvSectionCountText, rdvWorkshopSection === 'other' && styles.rdvSectionCountTextActive]}>
+                        {rdvOtherWorkshops.length}
+                      </ThemedText>
+                    </View>
+                  </LinearGradient>
+                </TouchableOpacity>
               </View>
 
               {loadingWorkshops ? (
                 <View style={styles.inlineLoading}>
                   <ActivityIndicator color="#0d9488" />
-                  <ThemedText style={styles.inlineLoadingText}>Chargement des ateliers...</ThemedText>
+                  <ThemedText style={styles.inlineLoadingText}>{t('workshops.loading')}</ThemedText>
                 </View>
-              ) : filteredAndSortedWorkshops.length ? (
+              ) : rdvSectionData.length ? (
                 <View style={styles.workshopList}>
-                  {filteredAndSortedWorkshops.map((w) => {
+                  {rdvSectionData.map((w) => {
                     const id = w.id || w._id || '';
                     const selected = rdvForm.workshopId === id;
+                    const dist = wsFormatDist(wsDistanceKm(w));
+                    const typeLabel =
+                      w.type === 'mechanic' ? t('workshops.type_mechanic')
+                        : w.type === 'paint_vehicle' ? t('workshops.type_paint')
+                        : w.type === 'mechanic_paint_inspector' ? t('workshops.type_both')
+                        : w.type ?? '';
                     return (
                       <TouchableOpacity
                         key={id}
@@ -2111,29 +2891,75 @@ export default function CarsScreen() {
                           setAvailableTimes([]);
                           if (rdvForm.date) fetchAvailableTimes(id, rdvForm.date);
                         }}
-                        style={[styles.workshopItem, selected && styles.workshopItemSelected]}
+                        style={[styles.rdvWsCard, selected && styles.rdvWsCardSelected]}
                       >
-                        <View style={styles.workshopItemHeader}>
-                          <View style={styles.workshopItemInfo}>
-                            <View style={styles.workshopNameRow}>
-                              <ThemedText style={[styles.workshopName, selected && styles.workshopNameSelected]}>{w.name}</ThemedText>
-                              {w.certifie && (
-                                <View style={styles.certifiedBadge}>
-                                  <IconSymbol name="checkmark.seal.fill" size={scale(14)} color="#10b981" />
-                                  <ThemedText style={styles.certifiedBadgeText}>Certifié</ThemedText>
-                                </View>
-                              )}
+                        {/* Name + certified */}
+                        <View style={styles.rdvWsHeader}>
+                          <ThemedText style={[styles.rdvWsName, selected && { color: '#fff' }]} numberOfLines={1}>{w.name}</ThemedText>
+                          {w.certifie && (
+                            <View style={styles.rdvWsCertBadge}>
+                              <IconSymbol name="checkmark.seal.fill" size={scale(12)} color="#10b981" />
+                              <ThemedText style={styles.rdvWsCertText}>{t('workshops.certified')}</ThemedText>
                             </View>
-                            {!!w.adr && (
-                              <View style={styles.workshopAdrRow}>
-                                <IconSymbol name="location.fill" size={scale(14)} color="#64748b" />
-                                <ThemedText style={[styles.workshopAdr, selected && styles.workshopAdrSelected]}>{w.adr}</ThemedText>
+                          )}
+                        </View>
+
+                        {/* Address */}
+                        {!!w.adr && (
+                          <View style={styles.rdvWsDetailRow}>
+                            <IconSymbol name="mappin.fill" size={scale(12)} color={selected ? '#d1fae5' : '#64748b'} />
+                            <ThemedText style={[styles.rdvWsDetail, selected && { color: '#d1fae5' }]} numberOfLines={2}>{w.adr}</ThemedText>
+                          </View>
+                        )}
+
+                        {/* Phone */}
+                        {!!w.phone && (
+                          <View style={styles.rdvWsDetailRow}>
+                            <IconSymbol name="phone.fill" size={scale(12)} color={selected ? '#d1fae5' : '#64748b'} />
+                            <ThemedText style={[styles.rdvWsDetail, selected && { color: '#d1fae5' }]}>{w.phone}</ThemedText>
+                          </View>
+                        )}
+
+                        {/* Type */}
+                        {!!typeLabel && (
+                          <View style={styles.rdvWsDetailRow}>
+                            <IconSymbol name="wrench.fill" size={scale(12)} color={selected ? '#d1fae5' : '#64748b'} />
+                            <ThemedText style={[styles.rdvWsDetail, selected && { color: '#d1fae5' }]}>{typeLabel}</ThemedText>
+                          </View>
+                        )}
+
+                        {/* Badges: distance + wilaya */}
+                        {(dist || w.locationRegion) && (
+                          <View style={styles.rdvWsBadgesRow}>
+                            {dist && (
+                              <View style={styles.rdvWsDistBadge}>
+                                <IconSymbol name="location.fill" size={scale(10)} color="#3b82f6" />
+                                <ThemedText style={styles.rdvWsDistText}>{dist}</ThemedText>
                               </View>
                             )}
-                            <ThemedText style={[styles.workshopPrice, selected && styles.workshopPriceSelected]}>
-                              {getWorkshopPrice(w)}
-                            </ThemedText>
+                            {w.locationRegion && (
+                              <View style={styles.rdvWsWilayaBadge}>
+                                <ThemedText style={styles.rdvWsWilayaText}>{w.locationRegion}</ThemedText>
+                              </View>
+                            )}
                           </View>
+                        )}
+
+                        {/* Prices */}
+                        <View style={styles.rdvWsPricesRow}>
+                          {w.price_visit_mec != null && w.price_visit_mec > 0 && (
+                            <View style={styles.rdvWsPriceBadge}>
+                              <ThemedText style={styles.rdvWsPriceText}>{t('workshops.type_mechanic')}: {w.price_visit_mec.toLocaleString()} DA</ThemedText>
+                            </View>
+                          )}
+                          {w.price_visit_paint != null && w.price_visit_paint > 0 && (
+                            <View style={[styles.rdvWsPriceBadge, { backgroundColor: '#fff7ed', borderColor: '#fed7aa' }]}>
+                              <ThemedText style={[styles.rdvWsPriceText, { color: '#c2410c' }]}>{t('workshops.type_paint')}: {w.price_visit_paint.toLocaleString()} DA</ThemedText>
+                            </View>
+                          )}
+                          {(!w.price_visit_mec || w.price_visit_mec === 0) && (!w.price_visit_paint || w.price_visit_paint === 0) && (
+                            <ThemedText style={styles.rdvWsPriceEmpty}>{t('workshops.priceNotSet')}</ThemedText>
+                          )}
                         </View>
                       </TouchableOpacity>
                     );
@@ -2142,7 +2968,7 @@ export default function CarsScreen() {
               ) : (
                 <View style={styles.emptyWorkshopBox}>
                   <IconSymbol name="building.2" size={scale(48)} color="#94a3b8" />
-                  <ThemedText style={styles.emptyText}>Aucun atelier trouvé avec ces filtres.</ThemedText>
+                  <ThemedText style={styles.emptyText}>{t('workshops.sectionEmpty')}</ThemedText>
                 </View>
               )}
 
@@ -2471,6 +3297,275 @@ const styles = StyleSheet.create({
     color: '#0f172a',
     fontWeight: '900',
     fontSize: fontSizes.xs,
+  },
+  sponsorPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: scale(4),
+    paddingVertical: scale(5),
+    paddingHorizontal: scale(10),
+    borderRadius: scale(999),
+  },
+  sponsorPillText: {
+    color: '#ffffff',
+    fontWeight: '800',
+    fontSize: fontSizes.xs,
+  },
+  sponsorInfoBox: {
+    marginTop: padding.small,
+    backgroundColor: '#faf5ff',
+    borderRadius: scale(12),
+    borderWidth: 1,
+    borderColor: '#e9d5ff',
+    paddingVertical: padding.small,
+    paddingHorizontal: padding.medium,
+    gap: scale(6),
+  },
+  sponsorInfoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: scale(8),
+  },
+  sponsorInfoLabel: {
+    color: '#6b21a8',
+    fontWeight: '700',
+    fontSize: fontSizes.sm,
+  },
+  sponsorInfoValue: {
+    marginLeft: 'auto',
+    color: '#0f172a',
+    fontWeight: '700',
+    fontSize: fontSizes.sm,
+  },
+  sponsorRemainingBox: {
+    marginTop: padding.small,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: scale(10),
+    backgroundColor: '#f5f3ff',
+    borderRadius: scale(12),
+    borderWidth: 1,
+    borderColor: '#ddd6fe',
+    paddingVertical: padding.medium,
+    paddingHorizontal: padding.medium,
+  },
+  sponsorRemainingBoxExpired: {
+    backgroundColor: '#f8fafc',
+    borderColor: '#e2e8f0',
+  },
+  sponsorRemainingLabel: {
+    color: '#7c3aed',
+    fontWeight: '700',
+    fontSize: fontSizes.xs,
+  },
+  sponsorRemainingValue: {
+    color: '#5b21b6',
+    fontWeight: '900',
+    fontSize: fontSizes.md,
+  },
+  sponsorRemainingValueExpired: {
+    color: '#64748b',
+  },
+  // ----- Create Sponsor button + modal styles ------
+  createSponsorBtn: {
+    marginBottom: padding.medium,
+    borderRadius: scale(14),
+    overflow: 'hidden',
+  },
+  createSponsorBtnGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: scale(8),
+    paddingVertical: padding.medium,
+    paddingHorizontal: padding.large,
+  },
+  createSponsorBtnText: {
+    color: '#ffffff',
+    fontWeight: '800',
+    fontSize: fontSizes.md,
+  },
+  sponsorEmptyInline: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: scale(10),
+    paddingVertical: padding.medium,
+    paddingHorizontal: padding.medium,
+    backgroundColor: '#f8fafc',
+    borderRadius: scale(12),
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  sponsorEmptyInlineText: {
+    flex: 1,
+    color: '#64748b',
+    fontWeight: '600',
+    fontSize: fontSizes.sm,
+  },
+  sponsorPickerCar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: scale(10),
+    padding: padding.small,
+    borderRadius: scale(12),
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    backgroundColor: '#ffffff',
+  },
+  sponsorPickerCarSelected: {
+    borderColor: '#9333ea',
+    backgroundColor: '#faf5ff',
+  },
+  sponsorPickerCarImageWrap: {
+    width: scale(54),
+    height: scale(54),
+    borderRadius: scale(10),
+    overflow: 'hidden',
+    backgroundColor: '#f1f5f9',
+  },
+  sponsorPickerCarImage: {
+    width: '100%',
+    height: '100%',
+  },
+  sponsorPickerCarTitle: {
+    color: '#0f172a',
+    fontWeight: '800',
+    fontSize: fontSizes.md,
+  },
+  sponsorPickerHintRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: scale(4),
+    marginTop: scale(2),
+  },
+  sponsorPickerHintText: {
+    color: '#94a3b8',
+    fontSize: fontSizes.xs,
+    fontWeight: '600',
+  },
+  sponsorPickerRadio: {
+    width: scale(22),
+    height: scale(22),
+    borderRadius: scale(11),
+    borderWidth: 2,
+    borderColor: '#cbd5e1',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sponsorPickerRadioSelected: {
+    borderColor: '#9333ea',
+    backgroundColor: '#9333ea',
+  },
+  sponsorPlanGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: padding.small,
+  },
+  sponsorPlanCard: {
+    flexBasis: '48%',
+    flexGrow: 1,
+    paddingVertical: padding.medium,
+    paddingHorizontal: padding.medium,
+    borderRadius: scale(14),
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    backgroundColor: '#ffffff',
+    alignItems: 'center',
+    gap: scale(4),
+  },
+  sponsorPlanCardSelected: {
+    borderColor: '#9333ea',
+    backgroundColor: '#faf5ff',
+  },
+  sponsorPlanDuration: {
+    color: '#0f172a',
+    fontWeight: '900',
+    fontSize: fontSizes.lg,
+  },
+  sponsorPlanDurationSelected: {
+    color: '#7c3aed',
+  },
+  sponsorPlanPrice: {
+    color: '#64748b',
+    fontWeight: '700',
+    fontSize: fontSizes.sm,
+  },
+  sponsorPlanPriceSelected: {
+    color: '#7c3aed',
+  },
+  // ----- Payment modal styles -----
+  paymentCard: {
+    marginHorizontal: padding.large,
+    marginTop: 'auto',
+    marginBottom: 'auto',
+    backgroundColor: '#ffffff',
+    borderRadius: scale(20),
+    padding: padding.large,
+    gap: padding.small,
+  },
+  paymentHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: scale(10),
+    marginBottom: padding.small,
+  },
+  paymentTitle: {
+    color: '#0f172a',
+    fontWeight: '900',
+    fontSize: fontSizes.lg,
+  },
+  paymentSub: {
+    color: '#64748b',
+    fontWeight: '600',
+    fontSize: fontSizes.sm,
+    textAlign: 'center',
+  },
+  paymentSummaryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: scale(8),
+    paddingVertical: scale(6),
+  },
+  paymentSummaryLabel: {
+    color: '#64748b',
+    fontWeight: '700',
+    fontSize: fontSizes.sm,
+  },
+  paymentSummaryValue: {
+    marginLeft: 'auto',
+    color: '#0f172a',
+    fontWeight: '800',
+    fontSize: fontSizes.sm,
+  },
+  paymentTotalRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: padding.small,
+    paddingTop: padding.small,
+    borderTopWidth: 1,
+    borderTopColor: '#e2e8f0',
+  },
+  paymentTotalLabel: {
+    color: '#0f172a',
+    fontWeight: '900',
+    fontSize: fontSizes.md,
+  },
+  paymentTotalValue: {
+    color: '#7c3aed',
+    fontWeight: '900',
+    fontSize: fontSizes.lg,
+  },
+  paymentNote: {
+    marginTop: padding.small,
+    color: '#94a3b8',
+    fontSize: fontSizes.xs,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  paymentSuccessIconWrap: {
+    alignItems: 'center',
+    marginBottom: padding.small,
   },
   cardBody: {
     padding: padding.large,
@@ -3174,6 +4269,165 @@ const styles = StyleSheet.create({
     padding: padding.large,
     gap: padding.small,
   },
+  rdvSectionTabs: {
+    flexDirection: 'row',
+    gap: scale(6),
+    marginBottom: scale(10),
+    marginTop: scale(4),
+  },
+  rdvSectionTab: {
+    flex: 1,
+    borderRadius: scale(12),
+    overflow: 'hidden',
+  },
+  rdvSectionTabGrad: {
+    paddingVertical: scale(8),
+    paddingHorizontal: scale(4),
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'column',
+    gap: scale(3),
+  },
+  rdvSectionTabText: {
+    fontSize: fontSizes.xs,
+    fontWeight: '700',
+    color: '#64748b',
+    textAlign: 'center',
+  },
+  rdvSectionTabTextActive: {
+    color: '#ffffff',
+  },
+  rdvSectionCount: {
+    backgroundColor: '#e2e8f0',
+    borderRadius: scale(999),
+    minWidth: scale(20),
+    paddingHorizontal: scale(5),
+    paddingVertical: scale(1),
+    alignItems: 'center',
+  },
+  rdvSectionCountActive: {
+    backgroundColor: 'rgba(255,255,255,0.3)',
+  },
+  rdvSectionCountText: {
+    fontSize: scale(9),
+    fontWeight: '800',
+    color: '#64748b',
+  },
+  rdvSectionCountTextActive: {
+    color: '#ffffff',
+  },
+  rdvWsCard: {
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+    backgroundColor: '#f8fafc',
+    borderRadius: scale(14),
+    padding: scale(10),
+    gap: scale(4),
+  },
+  rdvWsCardSelected: {
+    borderColor: '#0d9488',
+    backgroundColor: '#0d9488',
+    borderWidth: 2,
+  },
+  rdvWsHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: scale(6),
+    flexWrap: 'wrap',
+  },
+  rdvWsName: {
+    fontWeight: '900',
+    color: '#0f172a',
+    fontSize: fontSizes.md,
+    flexShrink: 1,
+  },
+  rdvWsCertBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: scale(3),
+    paddingVertical: scale(2),
+    paddingHorizontal: scale(6),
+    borderRadius: scale(999),
+    backgroundColor: '#f0fdf4',
+    borderWidth: 1,
+    borderColor: '#bbf7d0',
+  },
+  rdvWsCertText: {
+    color: '#10b981',
+    fontWeight: '800',
+    fontSize: fontSizes.xs,
+  },
+  rdvWsDetailRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: scale(5),
+  },
+  rdvWsDetail: {
+    fontSize: fontSizes.xs,
+    color: '#64748b',
+    flex: 1,
+    lineHeight: scale(16),
+  },
+  rdvWsBadgesRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: scale(4),
+    marginTop: scale(1),
+  },
+  rdvWsDistBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: scale(3),
+    paddingVertical: scale(2),
+    paddingHorizontal: scale(6),
+    borderRadius: scale(8),
+    backgroundColor: '#eff6ff',
+    borderWidth: 1,
+    borderColor: '#bfdbfe',
+  },
+  rdvWsDistText: {
+    fontSize: fontSizes.xs,
+    fontWeight: '700',
+    color: '#3b82f6',
+  },
+  rdvWsWilayaBadge: {
+    paddingVertical: scale(2),
+    paddingHorizontal: scale(6),
+    borderRadius: scale(8),
+    backgroundColor: '#faf5ff',
+    borderWidth: 1,
+    borderColor: '#e9d5ff',
+  },
+  rdvWsWilayaText: {
+    fontSize: fontSizes.xs,
+    fontWeight: '700',
+    color: '#7c3aed',
+  },
+  rdvWsPricesRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: scale(4),
+    marginTop: scale(2),
+  },
+  rdvWsPriceBadge: {
+    paddingVertical: scale(2),
+    paddingHorizontal: scale(6),
+    borderRadius: scale(8),
+    backgroundColor: '#f0fdfa',
+    borderWidth: 1,
+    borderColor: '#ccfbf1',
+  },
+  rdvWsPriceText: {
+    fontSize: fontSizes.xs,
+    fontWeight: '700',
+    color: '#0d9488',
+  },
+  rdvWsPriceEmpty: {
+    fontSize: fontSizes.xs,
+    fontWeight: '600',
+    color: '#9ca3af',
+    fontStyle: 'italic',
+  },
   timeChip: {
     paddingVertical: scale(10),
     paddingHorizontal: scale(14),
@@ -3402,212 +4656,6 @@ const styles = StyleSheet.create({
   certifiedCarBadgeText: {
     fontSize: fontSizes.xs,
     fontWeight: '800',
-    color: '#ffffff',
-  },
-  // Témoignages Styles
-  temoignagesContainer: {
-    gap: padding.large,
-  },
-  temoignagesHeader: {
-    borderRadius: scale(24),
-    overflow: 'hidden',
-    marginBottom: padding.medium,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#9333ea',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.2,
-        shadowRadius: 12,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
-  },
-  temoignagesHeaderGradient: {
-    padding: padding.large,
-    borderRadius: scale(24),
-    borderWidth: 2,
-    borderColor: '#e9d5ff',
-  },
-  temoignagesHeaderContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: padding.medium,
-  },
-  temoignagesIconContainer: {
-    width: scale(56),
-    height: scale(56),
-    borderRadius: scale(16),
-    overflow: 'hidden',
-  },
-  temoignagesIconGradient: {
-    width: '100%',
-    height: '100%',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  temoignagesHeaderText: {
-    flex: 1,
-  },
-  temoignagesTitle: {
-    fontSize: fontSizes['2xl'],
-    fontWeight: '900',
-    color: '#9333ea',
-    marginBottom: scale(4),
-  },
-  temoignagesSubtitle: {
-    fontSize: fontSizes.sm,
-    color: '#7c3aed',
-    fontWeight: '600',
-  },
-  temoignagesList: {
-    gap: padding.large,
-  },
-  temoignageCard: {
-    borderRadius: scale(24),
-    overflow: 'hidden',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#9333ea',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.15,
-        shadowRadius: 12,
-      },
-      android: {
-        elevation: 6,
-      },
-    }),
-  },
-  temoignageCardGradient: {
-    borderRadius: scale(24),
-    borderWidth: 2,
-    borderColor: '#e9d5ff',
-    overflow: 'hidden',
-  },
-  temoignageImageContainer: {
-    height: scale(200),
-    backgroundColor: '#f1f5f9',
-    position: 'relative',
-  },
-  temoignageImage: {
-    width: '100%',
-    height: '100%',
-  },
-  temoignageImagePlaceholder: {
-    width: '100%',
-    height: '100%',
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#f3f4f6',
-  },
-  temoignageBadge: {
-    position: 'absolute',
-    top: padding.medium,
-    right: padding.medium,
-  },
-  temoignageBadgeGradient: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: scale(6),
-    paddingVertical: scale(8),
-    paddingHorizontal: scale(12),
-    borderRadius: scale(999),
-  },
-  temoignageBadgeText: {
-    fontSize: fontSizes.xs,
-    fontWeight: '900',
-    color: '#ffffff',
-  },
-  temoignageInfo: {
-    padding: padding.large,
-    gap: padding.medium,
-  },
-  temoignageCarName: {
-    fontSize: fontSizes.xl,
-    fontWeight: '900',
-    color: '#1f2937',
-  },
-  temoignageCarYear: {
-    fontSize: fontSizes.md,
-    color: '#6b7280',
-    fontWeight: '700',
-  },
-  temoignageDetails: {
-    flexDirection: 'row',
-    gap: padding.large,
-    flexWrap: 'wrap',
-    paddingVertical: padding.medium,
-    borderTopWidth: 1,
-    borderBottomWidth: 1,
-    borderColor: '#e5e7eb',
-  },
-  temoignageDetailItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: padding.small,
-  },
-  temoignageDetailText: {
-    fontSize: fontSizes.sm,
-    color: '#64748b',
-    fontWeight: '700',
-  },
-  temoignageVerification: {
-    marginTop: padding.small,
-    padding: padding.medium,
-    backgroundColor: '#faf5ff',
-    borderRadius: scale(16),
-    borderWidth: 1,
-    borderColor: '#e9d5ff',
-  },
-  temoignageVerificationHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: padding.small,
-    marginBottom: scale(8),
-  },
-  temoignageVerificationTitle: {
-    fontSize: fontSizes.sm,
-    fontWeight: '800',
-    color: '#9333ea',
-  },
-  temoignageWorkshopName: {
-    fontSize: fontSizes.md,
-    fontWeight: '800',
-    color: '#1f2937',
-    marginBottom: scale(4),
-  },
-  temoignageDate: {
-    fontSize: fontSizes.sm,
-    color: '#64748b',
-    fontWeight: '600',
-  },
-  temoignageViewButton: {
-    borderRadius: scale(16),
-    overflow: 'hidden',
-    marginTop: padding.small,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#9333ea',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.3,
-        shadowRadius: 8,
-      },
-      android: {
-        elevation: 6,
-      },
-    }),
-  },
-  temoignageViewButtonGradient: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: padding.small,
-    paddingVertical: padding.medium,
-  },
-  temoignageViewButtonText: {
-    fontSize: fontSizes.md,
-    fontWeight: '900',
     color: '#ffffff',
   },
 });

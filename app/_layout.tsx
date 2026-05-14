@@ -21,8 +21,8 @@ import { NotificationProvider } from '@/contexts/NotificationContext';
 import { ChatProvider } from '@/contexts/ChatContext';
 import { NotificationBanner } from '@/components/NotificationBanner';
 import { LanguageProvider } from '@/contexts/LanguageContext';
+import { LocationProvider } from '@/contexts/LocationContext';
 import '@/utils/i18n';
-import { LanguageFloatingButton } from '@/components/LanguageFloatingButton';
 import { I18nextProvider } from 'react-i18next';
 import i18n from '@/utils/i18n';
 import { useLanguage } from '@/contexts/LanguageContext';
@@ -221,12 +221,11 @@ function ForegroundRefreshAndSubscriptionGuard() {
 
 export default function RootLayout() {
   const colorScheme = useColorScheme();
-  const segments = useSegments();
-  const inSplash = segments[0] === 'splash';
 
   return (
     <I18nextProvider i18n={i18n}>
       <LanguageProvider>
+        <LocationProvider>
         <AuthProvider>
           <NotificationProvider>
             <SplashGate />
@@ -243,19 +242,12 @@ export default function RootLayout() {
                   <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
                 </Stack>
                 <NotificationBanner />
-                {/* Language button placement:
-                    - On splash: show in header (top-right)
-                    - On other pages: show above bottom navigation (bottom-right) */}
-                {inSplash ? (
-                  <LanguageFloatingButton position="top-right" variant="icon" />
-                ) : (
-                  <LanguageFloatingButton position="bottom-right" bottomOffset={0} variant="icon" />
-                )}
                 <StatusBar style="auto" />
               </ThemeProvider>
             </ChatProvider>
           </NotificationProvider>
         </AuthProvider>
+        </LocationProvider>
       </LanguageProvider>
     </I18nextProvider>
   );

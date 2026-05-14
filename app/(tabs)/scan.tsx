@@ -8,7 +8,9 @@ import {
   ActivityIndicator,
   Modal,
   Dimensions,
-  Text,
+  TextInput,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -40,6 +42,36 @@ interface CarVerificationResult {
   message: string;
 }
 
+/** Map known `/car/lookup-vin` API messages (often French) to i18n keys. */
+function localizeVinLookupApiMessage(
+  raw: string | undefined | null,
+  t: (key: string) => string,
+): string {
+  if (raw == null || String(raw).trim() === '') return t('scan.vinInvalid');
+  const m = String(raw).trim();
+  const exact: Record<string, string> = {
+    'VIN manquant': 'scan.vinMissing',
+    'Le VIN doit contenir exactement 17 caractères': 'scan.vinLengthError',
+  };
+  const key = exact[m];
+  if (key) return t(key);
+  if (
+    m.includes('API VIN key not configured') ||
+    m.includes('Erreur lors de la vérification du VIN')
+  ) {
+    return t('scan.vinErrorGeneric');
+  }
+  if (
+    m.includes('non trouvé') ||
+    m.includes('invalide') ||
+    m.includes('Invalid') ||
+    m.includes('not found')
+  ) {
+    return t('scan.vinInvalid');
+  }
+  return m;
+}
+
 export default function ScanScreen() {
   const { t } = useTranslation();
   const [isScanning, setIsScanning] = useState(false);
@@ -50,6 +82,79 @@ export default function ScanScreen() {
   const router = useRouter();
   const verifyStartedAtRef = useRef<number | null>(null);
   const verifyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const [vinInput, setVinInput] = useState('');
+  const [vinLoading, setVinLoading] = useState(false);
+  const [vinResult, setVinResult] = useState<{
+    valid: boolean;
+    message: string;
+    remark?: string;
+  } | null>(null);
+  /** VIN block collapsed by default */
+  const [vinSectionExpanded, setVinSectionExpanded] = useState(false);
+
+  const sanitizeVin = (text: string) =>
+    text.toUpperCase().replace(/[^A-HJ-NPR-Z0-9]/g, '').slice(0, 17);
+
+  const handleVinTextChange = (text: string) => {
+    setVinInput(sanitizeVin(text));
+    setVinResult(null);
+  };
+
+  const handleVinVerify = async () => {
+    const v = vinInput.trim();
+    if (v.length !== 17) {
+      setVinResult({ valid: false, message: t('scan.vinLengthError') });
+      return;
+    }
+    setVinLoading(true);
+    setVinResult(null);
+    try {
+      const response = await apiRequest('/car/lookup-vin', {
+        method: 'POST',
+        body: JSON.stringify({ vin: v }),
+      });
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        const raw =
+          typeof data?.message === 'string' ? data.message : '';
+        setVinResult({
+          valid: false,
+          message: raw
+            ? localizeVinLookupApiMessage(raw, t)
+            : t('scan.vinErrorGeneric'),
+        });
+        return;
+      }
+
+      if (data?.ok && data.valid) {
+        setVinResult({
+          valid: true,
+          message:
+            typeof data.remark === 'string' && data.remark.trim() !== ''
+              ? data.remark
+              : typeof data.message === 'string'
+                ? data.message
+                : t('scan.vinValid'),
+          remark: typeof data.remark === 'string' ? data.remark : undefined,
+        });
+      } else {
+        const raw =
+          typeof data?.message === 'string' ? data.message : '';
+        setVinResult({
+          valid: false,
+          message: raw
+            ? localizeVinLookupApiMessage(raw, t)
+            : t('scan.vinInvalid'),
+        });
+      }
+    } catch {
+      setVinResult({ valid: false, message: t('scan.vinErrorGeneric') });
+    } finally {
+      setVinLoading(false);
+    }
+  };
 
   useEffect(() => {
     // Reset scanned state when scanning starts
@@ -128,7 +233,7 @@ export default function ScanScreen() {
       }
 
       if (!carId) {
-        throw new Error('Code QR invalide. Format attendu: URL avec ID de véhicule.');
+        throw new Error('SCAN_QR_INVALID');
       }
 
       // Verify car with backend
@@ -141,10 +246,16 @@ export default function ScanScreen() {
       setVerificationResult(result);
       finishVerifyingWithMinDelay();
     } catch (error: any) {
+      const m = typeof error?.message === 'string' ? error.message : '';
       setVerificationResult({
         ok: false,
         verified: false,
-        message: error?.message || t('scan.verifying'),
+        message:
+          m === 'SCAN_QR_INVALID'
+            ? t('scan.qrInvalidFormat')
+            : m.trim() !== ''
+              ? m
+              : t('scan.qrVerifyFailed'),
       });
       finishVerifyingWithMinDelay();
     }
@@ -278,7 +389,9 @@ export default function ScanScreen() {
                   color="#ffffff"
                 />
                 <ThemedText style={styles.resultModalTitle}>
-                  {verificationResult.verified ? 'Véhicule vérifié' : 'Véhicule non vérifié'}
+                  {verificationResult.verified
+                    ? t('scan.vehicleVerified')
+                    : t('scan.vehicleNotVerified')}
                 </ThemedText>
                 
                 {verificationResult.car && (
@@ -287,7 +400,7 @@ export default function ScanScreen() {
                       {verificationResult.car.brand} {verificationResult.car.model}
                     </ThemedText>
                     <ThemedText style={styles.resultCarInfoSubtext}>
-                      Année: {verificationResult.car.year}
+                      {t('scan.yearLabel', { year: verificationResult.car.year })}
                     </ThemedText>
                   </View>
                 )}
@@ -309,7 +422,7 @@ export default function ScanScreen() {
                       >
                         <IconSymbol name="car.fill" size={scale(20)} color="#0d9488" />
                         <ThemedText style={styles.viewDetailsButtonText}>
-                          Voir les détails
+                          {t('scan.viewCarDetails')}
                         </ThemedText>
                       </LinearGradient>
                     </TouchableOpacity>
@@ -321,7 +434,7 @@ export default function ScanScreen() {
                     activeOpacity={0.8}
                   >
                     <ThemedText style={styles.rescanButtonText}>
-                      Scanner à nouveau
+                      {t('scan.rescan')}
                     </ThemedText>
                   </TouchableOpacity>
                   
@@ -331,7 +444,7 @@ export default function ScanScreen() {
                     activeOpacity={0.8}
                   >
                     <ThemedText style={styles.closeModalButtonText}>
-                      Fermer
+                      {t('common.close')}
                     </ThemedText>
                   </TouchableOpacity>
                 </View>
@@ -346,10 +459,16 @@ export default function ScanScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <StatusBar style="dark" />
+      <KeyboardAvoidingView
+        style={styles.keyboardAvoid}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 64 : 0}
+      >
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
         {/* Header */}
         <Animated.View
@@ -370,8 +489,102 @@ export default function ScanScreen() {
             </View>
             <ThemedText style={styles.title}>{t('tabs.scan')}</ThemedText>
             <ThemedText style={styles.subtitle}>
-              {t('scan.verifyingSubtitle')}
+              {t('scan.pageSubtitle')}
             </ThemedText>
+          </LinearGradient>
+        </Animated.View>
+
+        {/* VIN manual check — collapsible (default closed) */}
+        <Animated.View
+          entering={FadeInDown.duration(600).delay(80).springify()}
+          style={styles.vinSection}
+        >
+          <LinearGradient
+            colors={['rgba(255, 255, 255, 0.98)', 'rgba(248, 250, 252, 0.98)']}
+            style={styles.vinCard}
+          >
+            <TouchableOpacity
+              style={[
+                styles.vinAccordionHeader,
+                vinSectionExpanded ? styles.vinAccordionHeaderOpen : null,
+              ]}
+              onPress={() => setVinSectionExpanded((prev) => !prev)}
+              activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: vinSectionExpanded }}
+            >
+              <View style={styles.vinAccordionTitleRow}>
+                <IconSymbol name="doc.text.fill" size={scale(22)} color="#0d9488" />
+                <ThemedText style={styles.vinSectionTitle}>{t('scan.vinSectionTitle')}</ThemedText>
+              </View>
+              <IconSymbol
+                name={vinSectionExpanded ? 'chevron.up' : 'chevron.down'}
+                size={scale(22)}
+                color="#64748b"
+              />
+            </TouchableOpacity>
+
+            {vinSectionExpanded ? (
+              <>
+                <ThemedText style={styles.vinHint}>{t('scan.vinHint')}</ThemedText>
+                <TextInput
+                  style={styles.vinInput}
+                  value={vinInput}
+                  onChangeText={handleVinTextChange}
+                  placeholder={t('scan.vinPlaceholder')}
+                  placeholderTextColor="#94a3b8"
+                  autoCapitalize="characters"
+                  autoCorrect={false}
+                  maxLength={17}
+                  editable={!vinLoading}
+                />
+                <ThemedText style={styles.vinCounter}>
+                  {t('scan.vinCharCount', { current: vinInput.length, max: 17 })}
+                </ThemedText>
+                <TouchableOpacity
+                  onPress={handleVinVerify}
+                  style={styles.vinButton}
+                  activeOpacity={0.85}
+                  disabled={vinLoading}
+                >
+                  <LinearGradient
+                    colors={['#0f766e', '#0d9488']}
+                    style={styles.vinButtonGradient}
+                  >
+                    {vinLoading ? (
+                      <ActivityIndicator color="#ffffff" />
+                    ) : (
+                      <>
+                        <IconSymbol name="checkmark.seal.fill" size={scale(20)} color="#ffffff" />
+                        <ThemedText style={styles.vinButtonText}>{t('scan.vinCheck')}</ThemedText>
+                      </>
+                    )}
+                  </LinearGradient>
+                </TouchableOpacity>
+                {vinResult ? (
+                  <View
+                    style={[
+                      styles.vinResultBox,
+                      vinResult.valid ? styles.vinResultOk : styles.vinResultBad,
+                    ]}
+                  >
+                    <IconSymbol
+                      name={vinResult.valid ? 'checkmark.circle.fill' : 'xmark.circle.fill'}
+                      size={scale(22)}
+                      color={vinResult.valid ? '#059669' : '#dc2626'}
+                    />
+                    <ThemedText
+                      style={[
+                        styles.vinResultText,
+                        vinResult.valid ? styles.vinResultTextOk : styles.vinResultTextBad,
+                      ]}
+                    >
+                      {vinResult.message}
+                    </ThemedText>
+                  </View>
+                ) : null}
+              </>
+            ) : null}
           </LinearGradient>
         </Animated.View>
 
@@ -411,6 +624,7 @@ export default function ScanScreen() {
           </View>
         </View>
       </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -419,6 +633,9 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#f8fafc',
+  },
+  keyboardAvoid: {
+    flex: 1,
   },
   scrollView: {
     flex: 1,
@@ -462,6 +679,110 @@ const styles = StyleSheet.create({
     color: '#64748b',
     textAlign: 'center',
     marginTop: padding.small,
+  },
+  vinSection: {
+    marginHorizontal: padding.horizontal,
+    marginBottom: padding.large,
+    borderRadius: scale(18),
+    overflow: 'hidden',
+  },
+  vinCard: {
+    padding: padding.large,
+    borderRadius: scale(18),
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: '#e2e8f0',
+  },
+  vinAccordionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+  },
+  vinAccordionHeaderOpen: {
+    marginBottom: padding.small,
+  },
+  vinAccordionTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: scale(10),
+    flex: 1,
+    paddingRight: padding.small,
+  },
+  vinSectionTitle: {
+    fontSize: fontSizes.lg,
+    fontWeight: '800',
+    color: '#0f172a',
+  },
+  vinHint: {
+    fontSize: fontSizes.sm,
+    color: '#64748b',
+    marginBottom: padding.medium,
+  },
+  vinInput: {
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+    borderRadius: scale(12),
+    paddingHorizontal: padding.medium,
+    paddingVertical: Platform.OS === 'ios' ? padding.medium : padding.small,
+    fontSize: fontSizes.md,
+    fontWeight: '600',
+    color: '#0f172a',
+    letterSpacing: 1.2,
+  },
+  vinCounter: {
+    alignSelf: 'flex-end',
+    fontSize: fontSizes.sm,
+    color: '#94a3b8',
+    marginTop: padding.small,
+    marginBottom: padding.medium,
+  },
+  vinButton: {
+    borderRadius: scale(14),
+    overflow: 'hidden',
+  },
+  vinButtonGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: scale(10),
+    paddingVertical: padding.medium,
+    paddingHorizontal: padding.large,
+    minHeight: scale(48),
+  },
+  vinButtonText: {
+    fontSize: fontSizes.md,
+    fontWeight: '800',
+    color: '#ffffff',
+  },
+  vinResultBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: scale(10),
+    marginTop: padding.medium,
+    padding: padding.medium,
+    borderRadius: scale(12),
+  },
+  vinResultOk: {
+    backgroundColor: '#ecfdf5',
+    borderWidth: 1,
+    borderColor: '#a7f3d0',
+  },
+  vinResultBad: {
+    backgroundColor: '#fef2f2',
+    borderWidth: 1,
+    borderColor: '#fecaca',
+  },
+  vinResultText: {
+    flex: 1,
+    fontSize: fontSizes.sm,
+    lineHeight: fontSizes.sm * 1.45,
+  },
+  vinResultTextOk: {
+    color: '#065f46',
+  },
+  vinResultTextBad: {
+    color: '#991b1b',
   },
   content: {
     paddingHorizontal: padding.horizontal,

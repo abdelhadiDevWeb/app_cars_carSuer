@@ -33,6 +33,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import { apiRequest, getImageUrl, getBackendUrl } from '@/utils/backend';
 import { useNotifications } from '@/hooks/useNotifications';
 import { useTranslation } from 'react-i18next';
+import { LanguageSelectionModal } from '@/components/LanguageSelectionModal';
 import {
   getPadding,
   getFontSizes,
@@ -48,16 +49,18 @@ const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpaci
 export default function ProfileScreen() {
   const { isAuthenticated, user, logout, refreshUser } = useAuth();
   const { unreadCount } = useNotifications();
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(true);
   const [userData, setUserData] = useState<any>(null);
   const [userImage, setUserImage] = useState<string | null>(null);
   const [stats, setStats] = useState<any>(null);
   const [subscription, setSubscription] = useState<any>(null);
-  const [timeRemaining, setTimeRemaining] = useState<string>('');
+  // Hidden with subscription timer UI — keep if timer is re-enabled
+  // const [timeRemaining, setTimeRemaining] = useState<string>('');
   const [showEditModal, setShowEditModal] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [showLanguageModal, setShowLanguageModal] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [isUploadingImage, setIsUploadingImage] = useState(false);
 
@@ -182,39 +185,33 @@ export default function ProfileScreen() {
     }
   };
 
-  // Timer effect to update remaining time
-  useEffect(() => {
-    if (!subscription || !subscription.date_end) return;
-
-    const updateTimer = () => {
-      const now = new Date().getTime();
-      const endDate = new Date(subscription.date_end).getTime();
-      const difference = endDate - now;
-
-      if (difference <= 0) {
-      setTimeRemaining(t('subscription.expired'));
-        return;
-      }
-
-      const days = Math.floor(difference / (1000 * 60 * 60 * 24));
-      const hours = Math.floor((difference % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-      const minutes = Math.floor((difference % (1000 * 60 * 60)) / (1000 * 60));
-      const seconds = Math.floor((difference % (1000 * 60)) / 1000);
-
-      if (days > 0) {
-        setTimeRemaining(`${days}j ${hours}h ${minutes}m ${seconds}s`);
-      } else if (hours > 0) {
-        setTimeRemaining(`${hours}h ${minutes}m ${seconds}s`);
-      } else {
-        setTimeRemaining(`${minutes}m ${seconds}s`);
-      }
-    };
-
-    updateTimer();
-    const interval = setInterval(updateTimer, 1000);
-
-    return () => clearInterval(interval);
-  }, [subscription]);
+  // Timer effect to update remaining time (hidden with subscription timer block in UI)
+  // useEffect(() => {
+  //   if (!subscription || !subscription.date_end) return;
+  //   const updateTimer = () => {
+  //     const now = new Date().getTime();
+  //     const endDate = new Date(subscription.date_end).getTime();
+  //     const difference = endDate - now;
+  //     if (difference <= 0) {
+  //       setTimeRemaining(t('subscription.expired'));
+  //       return;
+  //     }
+  //     const days = Math.floor(difference / (1000 * 60 * 60 * 24));
+  //     const hours = Math.floor((difference % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+  //     const minutes = Math.floor((difference % (1000 * 60 * 60)) / (1000 * 60));
+  //     const seconds = Math.floor((difference % (1000 * 60)) / 1000);
+  //     if (days > 0) {
+  //       setTimeRemaining(`${days}j ${hours}h ${minutes}m ${seconds}s`);
+  //     } else if (hours > 0) {
+  //       setTimeRemaining(`${hours}h ${minutes}m ${seconds}s`);
+  //     } else {
+  //       setTimeRemaining(`${minutes}m ${seconds}s`);
+  //     }
+  //   };
+  //   updateTimer();
+  //   const interval = setInterval(updateTimer, 1000);
+  //   return () => clearInterval(interval);
+  // }, [subscription]);
 
   const handleImagePicker = async () => {
     try {
@@ -425,22 +422,21 @@ export default function ProfileScreen() {
     setShowEditModal(true);
   };
 
-  const getCountdownParts = () => {
-    if (!subscription?.date_end) {
-      return { days: 0, hours: 0, minutes: 0, seconds: 0, expired: true };
-    }
-    const diff = new Date(subscription.date_end).getTime() - Date.now();
-    if (diff <= 0) {
-      return { days: 0, hours: 0, minutes: 0, seconds: 0, expired: true };
-    }
-
-    const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-    const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-    const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-    const seconds = Math.floor((diff % (1000 * 60)) / 1000);
-
-    return { days, hours, minutes, seconds, expired: false };
-  };
+  // Countdown helper — used by hidden subscription timer JSX block
+  // const getCountdownParts = () => {
+  //   if (!subscription?.date_end) {
+  //     return { days: 0, hours: 0, minutes: 0, seconds: 0, expired: true };
+  //   }
+  //   const diff = new Date(subscription.date_end).getTime() - Date.now();
+  //   if (diff <= 0) {
+  //     return { days: 0, hours: 0, minutes: 0, seconds: 0, expired: true };
+  //   }
+  //   const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+  //   const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+  //   const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+  //   const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+  //   return { days, hours, minutes, seconds, expired: false };
+  // };
 
   if (!isAuthenticated) {
     return null;
@@ -457,7 +453,7 @@ export default function ProfileScreen() {
     );
   }
 
-  const countdown = getCountdownParts();
+  // const countdown = getCountdownParts();
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -524,51 +520,54 @@ export default function ProfileScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* User Info */}
             <View style={styles.userInfo}>
               <ThemedText style={styles.userName}>
-                {userData?.firstName && userData?.lastName
-                  ? `${userData.firstName} ${userData.lastName}`
-                  : userData?.email || t('profile.defaultUser')}
+                {userData?.type === 'workshop' && userData?.name
+                  ? userData.name
+                  : userData?.firstName && userData?.lastName
+                    ? `${userData.firstName} ${userData.lastName}`
+                    : userData?.firstName || userData?.email || t('profile.defaultUser')}
               </ThemedText>
-              <ThemedText style={styles.userEmail}>{userData?.email}</ThemedText>
-
-              {/* Status Badges */}
-              <View style={styles.badgesContainer}>
-                {userData?.certifie && (
-                  <View style={styles.badge}>
-                    <LinearGradient
-                      colors={['#f0fdf4', '#dcfce7']}
-                      style={styles.badgeGradient}
-                    >
-                      <IconSymbol name="checkmark.seal.fill" size={14} color="#10b981" />
-                      <ThemedText style={styles.badgeText}>Certifié</ThemedText>
-                    </LinearGradient>
-                  </View>
-                )}
-                {userData?.status && (
-                  <View style={styles.badge}>
-                    <LinearGradient
-                      colors={['#eff6ff', '#dbeafe']}
-                      style={styles.badgeGradient}
-                    >
-                      <IconSymbol name="checkmark.circle.fill" size={14} color="#3b82f6" />
-                      <ThemedText style={styles.badgeText}>{t('profile.active') || 'Active'}</ThemedText>
-                    </LinearGradient>
-                  </View>
-                )}
-                {userData?.role === 'admin' && (
-                  <View style={styles.badge}>
-                    <LinearGradient
-                      colors={['#fef3c7', '#fde68a']}
-                      style={styles.badgeGradient}
-                    >
-                      <IconSymbol name="star.fill" size={14} color="#f59e0b" />
-                      <ThemedText style={styles.badgeText}>{t('profile.admin') || 'Admin'}</ThemedText>
-                    </LinearGradient>
-                  </View>
-                )}
-              </View>
+              {!!userData?.email && (
+                <ThemedText style={styles.userEmail}>{userData.email}</ThemedText>
+              )}
+              {!!userData?.createdAt && (
+                <ThemedText style={styles.userMemberSince}>
+                  {t('profile.memberSince', {
+                    date: new Date(userData.createdAt).toLocaleDateString(i18n.language, {
+                      day: 'numeric',
+                      month: 'long',
+                      year: 'numeric',
+                    }),
+                  })}
+                </ThemedText>
+              )}
+              {(userData?.certifie || userData?.role === 'admin') && (
+                <View style={styles.badgesContainer}>
+                  {userData?.certifie && (
+                    <View style={styles.badge}>
+                      <LinearGradient
+                        colors={['#f0fdf4', '#dcfce7']}
+                        style={styles.badgeGradient}
+                      >
+                        <IconSymbol name="checkmark.seal.fill" size={14} color="#10b981" />
+                        <ThemedText style={styles.badgeText}>Certifié</ThemedText>
+                      </LinearGradient>
+                    </View>
+                  )}
+                  {userData?.role === 'admin' && (
+                    <View style={styles.badge}>
+                      <LinearGradient
+                        colors={['#fef3c7', '#fde68a']}
+                        style={styles.badgeGradient}
+                      >
+                        <IconSymbol name="star.fill" size={14} color="#f59e0b" />
+                        <ThemedText style={styles.badgeText}>{t('profile.admin') || 'Admin'}</ThemedText>
+                      </LinearGradient>
+                    </View>
+                  )}
+                </View>
+              )}
             </View>
           </LinearGradient>
         </Animated.View>
@@ -710,44 +709,31 @@ export default function ProfileScreen() {
                     })}
                   </ThemedText>
                 </View>
-              </View>
-
-              {/* Timer */}
-              <View style={styles.timerContainer}>
-                <LinearGradient
-                  colors={['#f0fdf4', '#dcfce7']}
-                  style={styles.timerGradient}
-                >
-                  <View style={styles.timerHeader}>
-                    <IconSymbol name="clock.fill" size={18} color="#10b981" />
-                    <ThemedText style={styles.timerLabel}>Temps restant</ThemedText>
+                {subscription.type_abonnement?.time != null && (
+                  <View style={styles.subscriptionDetailRow}>
+                    <ThemedText style={styles.subscriptionDetailLabel}>
+                      {t('subscription.planDurationLabel')}
+                    </ThemedText>
+                    <ThemedText style={styles.subscriptionDetailValue}>
+                      {`${subscription.type_abonnement.time} ${t('subscription.days')}`}
+                    </ThemedText>
                   </View>
-
-                  {countdown.expired ? (
-                    <ThemedText style={styles.timerValue}>Expiré</ThemedText>
-                  ) : (
-                    <View style={styles.timerBoxesRow}>
-                      <View style={styles.timerBox}>
-                        <ThemedText style={styles.timerBoxValue}>{countdown.days}</ThemedText>
-                        <ThemedText style={styles.timerBoxLabel}>{t('subscription.days')}</ThemedText>
-                      </View>
-                      <View style={styles.timerBox}>
-                        <ThemedText style={styles.timerBoxValue}>{countdown.hours}</ThemedText>
-                        <ThemedText style={styles.timerBoxLabel}>{t('subscription.hours')}</ThemedText>
-                      </View>
-                      <View style={styles.timerBox}>
-                        <ThemedText style={styles.timerBoxValue}>{countdown.minutes}</ThemedText>
-                        <ThemedText style={styles.timerBoxLabel}>{t('subscription.minutes')}</ThemedText>
-                      </View>
-                      <View style={styles.timerBox}>
-                        <ThemedText style={styles.timerBoxValue}>{countdown.seconds}</ThemedText>
-                        <ThemedText style={styles.timerBoxLabel}>{t('subscription.seconds')}</ThemedText>
-                      </View>
-                    </View>
-                  )}
-                  <ThemedText style={styles.timerSubValue}>{timeRemaining || t('subscription.calculating')}</ThemedText>
-                </LinearGradient>
+                )}
+                {(subscription.price != null || subscription.type_abonnement?.price != null) && (
+                  <View style={styles.subscriptionDetailRow}>
+                    <ThemedText style={styles.subscriptionDetailLabel}>
+                      {t('subscription.amountPaidLabel')}
+                    </ThemedText>
+                    <ThemedText style={styles.subscriptionDetailValue}>
+                      {`${Number(
+                        subscription.price ?? subscription.type_abonnement?.price ?? 0
+                      ).toLocaleString(undefined, { maximumFractionDigits: 0 })} ${t('home.priceCurrency')}`}
+                    </ThemedText>
+                  </View>
+                )}
               </View>
+
+              {/* Countdown timer UI was removed; restore commented useState/useEffect/getCountdownParts in this file if needed */}
             </LinearGradient>
           </Animated.View>
         )}
@@ -757,6 +743,34 @@ export default function ProfileScreen() {
           entering={FadeInDown.duration(600).delay(400).springify()}
           style={styles.actionsContainer}
         >
+          {/* Language (settings) */}
+          <TouchableOpacity
+            onPress={() => setShowLanguageModal(true)}
+            style={styles.actionCard}
+            activeOpacity={0.8}
+          >
+            <LinearGradient
+              colors={['rgba(255, 255, 255, 0.98)', 'rgba(255, 255, 255, 0.95)']}
+              style={styles.actionCardBlur}
+            >
+              <View style={styles.actionContent}>
+                <View style={styles.actionIconContainer}>
+                  <LinearGradient
+                    colors={['#6366f1', '#4f46e5']}
+                    style={styles.actionIconGradient}
+                  >
+                    <IconSymbol name="globe" size={20} color="#ffffff" />
+                  </LinearGradient>
+                </View>
+                <View style={styles.actionTextContainer}>
+                  <ThemedText style={styles.actionTitle}>{t('settings.language')}</ThemedText>
+                  <ThemedText style={styles.actionSubtitle}>{t('settings.languageSubtitle')}</ThemedText>
+                </View>
+                <IconSymbol name="chevron.right" size={20} color="#9ca3af" />
+              </View>
+            </LinearGradient>
+          </TouchableOpacity>
+
           {/* Edit Profile */}
           <AnimatedTouchableOpacity
             onPress={handleEditButtonPress}
@@ -874,6 +888,11 @@ export default function ProfileScreen() {
           </TouchableOpacity>
         </Animated.View>
       </ScrollView>
+
+      <LanguageSelectionModal
+        visible={showLanguageModal}
+        onRequestClose={() => setShowLanguageModal(false)}
+      />
 
       {/* Edit Profile Modal */}
       <Modal
@@ -1333,6 +1352,12 @@ const styles = StyleSheet.create({
   userEmail: {
     fontSize: fontSizes.md,
     color: '#6b7280',
+    marginBottom: padding.small,
+    textAlign: 'center',
+  },
+  userMemberSince: {
+    fontSize: fontSizes.sm,
+    color: '#9ca3af',
     marginBottom: padding.medium,
     textAlign: 'center',
   },
