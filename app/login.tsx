@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   StyleSheet,
   View,
@@ -15,20 +15,170 @@ import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import Animated, { FadeInDown, FadeIn } from 'react-native-reanimated';
+import Animated, {
+  FadeInDown,
+  FadeInUp,
+  FadeIn,
+  ZoomIn,
+  SlideInRight,
+  useSharedValue,
+  useAnimatedStyle,
+  withSpring,
+  withRepeat,
+  withSequence,
+  withTiming,
+  withDelay,
+  Easing,
+  interpolate,
+  runOnJS,
+} from 'react-native-reanimated';
 import { ThemedText } from '@/components/themed-text';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { apiRequest } from '@/utils/backend';
 import { useAuth } from '@/contexts/AuthContext';
-import { SCREEN_WIDTH, getPadding, getFontSizes, scale } from '@/utils/responsive';
+import { SCREEN_WIDTH, SCREEN_HEIGHT, getPadding, getFontSizes, scale } from '@/utils/responsive';
 import { useTranslation } from 'react-i18next';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const padding = getPadding();
 const fontSizes = getFontSizes();
 
+const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpacity);
+const AnimatedLinearGradient = Animated.createAnimatedComponent(LinearGradient);
+
 const ADMIN_WEB_APP_URL = 'https://carsure-dz.vercel.app/';
 const ADMIN_WEB_ONLY_NOTICE_KEY = 'admin_web_only_notice';
+
+function AnimatedBlob({ delay, startX, startY, size, colors }: {
+  delay: number; startX: number; startY: number; size: number; colors: string[];
+}) {
+  const translateY = useSharedValue(0);
+  const translateX = useSharedValue(0);
+  const scaleVal = useSharedValue(1);
+
+  useEffect(() => {
+    translateY.value = withDelay(delay,
+      withRepeat(
+        withSequence(
+          withTiming(-20, { duration: 3000, easing: Easing.inOut(Easing.ease) }),
+          withTiming(20, { duration: 3000, easing: Easing.inOut(Easing.ease) }),
+        ),
+        -1, true
+      )
+    );
+    translateX.value = withDelay(delay + 500,
+      withRepeat(
+        withSequence(
+          withTiming(15, { duration: 4000, easing: Easing.inOut(Easing.ease) }),
+          withTiming(-15, { duration: 4000, easing: Easing.inOut(Easing.ease) }),
+        ),
+        -1, true
+      )
+    );
+    scaleVal.value = withDelay(delay + 200,
+      withRepeat(
+        withSequence(
+          withTiming(1.15, { duration: 3500, easing: Easing.inOut(Easing.ease) }),
+          withTiming(0.9, { duration: 3500, easing: Easing.inOut(Easing.ease) }),
+        ),
+        -1, true
+      )
+    );
+  }, []);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [
+      { translateY: translateY.value },
+      { translateX: translateX.value },
+      { scale: scaleVal.value },
+    ],
+  }));
+
+  return (
+    <Animated.View style={[{
+      position: 'absolute',
+      top: startY,
+      left: startX,
+      width: size,
+      height: size,
+      borderRadius: size / 2,
+    }, animatedStyle]}>
+      <LinearGradient
+        colors={colors as [string, string, ...string[]]}
+        style={{ width: size, height: size, borderRadius: size / 2 }}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+      />
+    </Animated.View>
+  );
+}
+
+function FocusableInput({
+  icon, placeholder, value, onChangeText, secureTextEntry, keyboardType, autoCapitalize, autoComplete,
+  showToggle, onToggle, toggleActive, style,
+}: {
+  icon: string;
+  placeholder: string;
+  value: string;
+  onChangeText: (t: string) => void;
+  secureTextEntry?: boolean;
+  keyboardType?: any;
+  autoCapitalize?: any;
+  autoComplete?: any;
+  showToggle?: boolean;
+  onToggle?: () => void;
+  toggleActive?: boolean;
+  style?: any;
+}) {
+  const [focused, setFocused] = useState(false);
+  const borderProgress = useSharedValue(0);
+
+  useEffect(() => {
+    borderProgress.value = withSpring(focused ? 1 : 0, { damping: 15, stiffness: 150 });
+  }, [focused]);
+
+  const wrapperAnimStyle = useAnimatedStyle(() => {
+    const borderColor = focused
+      ? 'rgba(13, 148, 136, 0.5)'
+      : '#e2e8f0';
+    return {
+      borderColor,
+      shadowOpacity: interpolate(borderProgress.value, [0, 1], [0, 0.12]),
+      shadowRadius: interpolate(borderProgress.value, [0, 1], [0, 12]),
+      transform: [{ scale: interpolate(borderProgress.value, [0, 1], [1, 1.01]) }],
+    };
+  });
+
+  return (
+    <Animated.View style={[styles.inputWrapper, wrapperAnimStyle, style]}>
+      <View style={[styles.inputIconContainer, focused && styles.inputIconContainerFocused]}>
+        <IconSymbol name={icon as any} size={18} color={focused ? '#0d9488' : '#94a3b8'} />
+      </View>
+      <TextInput
+        style={styles.input}
+        placeholder={placeholder}
+        placeholderTextColor="#94a3b8"
+        value={value}
+        onChangeText={onChangeText}
+        secureTextEntry={secureTextEntry}
+        keyboardType={keyboardType}
+        autoCapitalize={autoCapitalize}
+        autoComplete={autoComplete}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+      />
+      {showToggle && (
+        <TouchableOpacity onPress={onToggle} style={styles.eyeButton}>
+          <IconSymbol
+            name={toggleActive ? 'eye.fill' as any : 'eye.slash.fill' as any}
+            size={20}
+            color={toggleActive ? '#0d9488' : '#94a3b8'}
+          />
+        </TouchableOpacity>
+      )}
+    </Animated.View>
+  );
+}
 
 export default function LoginPage() {
   const router = useRouter();
@@ -48,12 +198,39 @@ export default function LoginPage() {
   const [verifyAccountType, setVerifyAccountType] = useState<'user' | 'workshop'>('user');
   const [verifyCode, setVerifyCode] = useState('');
   const [verifyModalError, setVerifyModalError] = useState('');
-  /** Server message or warning when email could not be sent (same idea as web: still show code entry). */
   const [verifyInfoBanner, setVerifyInfoBanner] = useState<string | null>(null);
   const [isResending, setIsResending] = useState(false);
   const [isVerifyingCode, setIsVerifyingCode] = useState(false);
   const [showEmailConfirmedModal, setShowEmailConfirmedModal] = useState(false);
   const [confirmedEmailHasAccess, setConfirmedEmailHasAccess] = useState(false);
+
+  const buttonScale = useSharedValue(1);
+  const logoPulse = useSharedValue(1);
+
+  useEffect(() => {
+    logoPulse.value = withRepeat(
+      withSequence(
+        withTiming(1.06, { duration: 2000, easing: Easing.inOut(Easing.ease) }),
+        withTiming(1, { duration: 2000, easing: Easing.inOut(Easing.ease) }),
+      ),
+      -1, true
+    );
+  }, []);
+
+  const logoAnimStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: logoPulse.value }],
+  }));
+
+  const buttonAnimStyle = useAnimatedStyle(() => ({
+    transform: [{ scale: buttonScale.value }],
+  }));
+
+  const onButtonPressIn = useCallback(() => {
+    buttonScale.value = withSpring(0.96, { damping: 15, stiffness: 300 });
+  }, []);
+  const onButtonPressOut = useCallback(() => {
+    buttonScale.value = withSpring(1, { damping: 15, stiffness: 300 });
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -63,925 +240,509 @@ export default function LoginPage() {
         if (cancelled || v !== '1') return;
         await AsyncStorage.removeItem(ADMIN_WEB_ONLY_NOTICE_KEY);
         setShowAdminWebModal(true);
-      } catch {
-        /* ignore */
-      }
+      } catch { /* ignore */ }
     })();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, []);
 
-  /** After successful email verification, log in and show the same “email confirmed” step as web. */
   const completeLoginAfterEmailVerification = async (loginEmail: string, loginPassword: string) => {
     try {
       const response = await apiRequest('/auth/login', {
         method: 'POST',
         body: JSON.stringify({ email: loginEmail.trim(), password: loginPassword }),
       });
-
       let data: Record<string, unknown>;
-      try {
-        data = await response.json();
-      } catch {
-        setError(t('login.serverError'));
-        return;
-      }
-
+      try { data = await response.json(); } catch { setError(t('login.serverError')); return; }
       if (!response.ok) {
         if (data.needsActivation && data.status === false) {
           setConfirmedEmailHasAccess(false);
           setShowEmailConfirmedModal(true);
           return;
         }
-        setError(
-          typeof data.message === 'string' && data.message.trim() !== ''
-            ? data.message
-            : t('login.loginError'),
-        );
+        setError(typeof data.message === 'string' && data.message.trim() !== '' ? data.message : t('login.loginError'));
         return;
       }
-
       if (data.token && data.user) {
         const isAdmin = data.type === 'user' && data.role === 'admin';
-        if (isAdmin) {
-          setShowAdminWebModal(true);
-          return;
-        }
-
+        if (isAdmin) { setShowAdminWebModal(true); return; }
         await login(data.token as string, {
-          _id: (data.user as { _id?: string; id?: string })._id || (data.user as { id?: string }).id,
-          email: (data.user as { email: string }).email,
-          firstName: (data.user as { firstName?: string }).firstName,
-          lastName: (data.user as { lastName?: string }).lastName,
+          _id: (data.user as any)._id || (data.user as any).id,
+          email: (data.user as any).email,
+          firstName: (data.user as any).firstName,
+          lastName: (data.user as any).lastName,
           type: data.type as string,
           role: data.role as string,
         });
-
         const isSellerClient = data.type === 'user' && data.role !== 'admin';
         if (isSellerClient) {
           try {
             const res = await apiRequest('/abonnement/my-subscription');
-            if (res.status === 401) {
-              return;
-            }
-            if (!res.ok) {
-              setConfirmedEmailHasAccess(true);
-              setShowEmailConfirmedModal(true);
-              return;
-            }
+            if (res.status === 401) return;
+            if (!res.ok) { setConfirmedEmailHasAccess(true); setShowEmailConfirmedModal(true); return; }
             const subData = await res.json().catch(() => null);
             const now = Date.now();
-            const isExpired =
-              !subData?.ok ||
-              !subData?.hasSubscription ||
-              !subData?.subscription?.date_end ||
-              new Date(subData.subscription.date_end).getTime() < now;
-
+            const isExpired = !subData?.ok || !subData?.hasSubscription || !subData?.subscription?.date_end || new Date(subData.subscription.date_end).getTime() < now;
             if (isExpired) {
               setShowExpiredModal(true);
-              try {
-                await apiRequest('/auth/profile', {
-                  method: 'PUT',
-                  body: JSON.stringify({ status: false }),
-                });
-              } catch {}
-              try {
-                await apiRequest('/abonnement/deactivate', { method: 'POST' });
-              } catch {}
+              try { await apiRequest('/auth/profile', { method: 'PUT', body: JSON.stringify({ status: false }) }); } catch {}
+              try { await apiRequest('/abonnement/deactivate', { method: 'POST' }); } catch {}
               return;
             }
-          } catch {
-            // Network etc. — treat as OK for opening success modal
-          }
+          } catch {}
         }
-
         setConfirmedEmailHasAccess(true);
         setShowEmailConfirmedModal(true);
       }
-    } catch {
-      setError(t('login.cannotConnect'));
-    }
+    } catch { setError(t('login.cannotConnect')); }
   };
 
   const submitLoginWithCredentials = async (loginEmail: string, loginPassword: string) => {
     setIsLoading(true);
     setError('');
-
     try {
       const response = await apiRequest('/auth/login', {
         method: 'POST',
         body: JSON.stringify({ email: loginEmail.trim(), password: loginPassword }),
       });
-
       let data: Record<string, unknown>;
-      try {
-        data = await response.json();
-      } catch (jsonError) {
-        console.error('Failed to parse JSON response:', jsonError);
-        setError(t('login.serverError'));
-        setIsLoading(false);
-        return;
-      }
-
+      try { data = await response.json(); } catch { setError(t('login.serverError')); setIsLoading(false); return; }
       if (!response.ok) {
         if (data.needsVerification) {
-          // Same as web: always open the confirmation modal (even if the email failed to send).
-          const sent =
-            data.verificationEmailSent !== false && data.verificationEmailSent !== 'false';
+          const sent = data.verificationEmailSent !== false && data.verificationEmailSent !== 'false';
           const apiMsg = typeof data.message === 'string' ? data.message.trim() : '';
-          const devCode =
-            typeof data.verificationCode === 'string' ? data.verificationCode : '';
+          const devCode = typeof data.verificationCode === 'string' ? data.verificationCode : '';
           setPendingVerifyEmail(loginEmail.trim());
           setVerifyAccountType(data.accountType === 'workshop' ? 'workshop' : 'user');
-          setVerifyCode('');
-          setVerifyModalError('');
+          setVerifyCode(''); setVerifyModalError('');
           if (!sent) {
-            setVerifyInfoBanner(
-              devCode
-                ? `${apiMsg || t('login.verificationEmailNotSent')} (${t('login.devCodeHint')}: ${devCode})`
-                : apiMsg || t('login.verificationEmailNotSent'),
-            );
-          } else {
-            setVerifyInfoBanner(null);
-          }
-          setShowVerifyEmailModal(true);
-          setIsLoading(false);
-          return;
+            setVerifyInfoBanner(devCode ? `${apiMsg || t('login.verificationEmailNotSent')} (${t('login.devCodeHint')}: ${devCode})` : apiMsg || t('login.verificationEmailNotSent'));
+          } else { setVerifyInfoBanner(null); }
+          setShowVerifyEmailModal(true); setIsLoading(false); return;
         }
-        if (data.needsActivation && data.status === false) {
-          setShowActivationModal(true);
-          setIsLoading(false);
-          return;
-        }
-        setError(t('login.loginError'));
-        setIsLoading(false);
-        return;
+        if (data.needsActivation && data.status === false) { setShowActivationModal(true); setIsLoading(false); return; }
+        setError(t('login.loginError')); setIsLoading(false); return;
       }
-
       if (data.token && data.user) {
         const isAdmin = data.type === 'user' && data.role === 'admin';
-        if (isAdmin) {
-          setShowAdminWebModal(true);
-          setIsLoading(false);
-          return;
-        }
-
+        if (isAdmin) { setShowAdminWebModal(true); setIsLoading(false); return; }
         await login(data.token as string, {
-          _id: (data.user as { _id?: string; id?: string })._id || (data.user as { id?: string }).id,
-          email: (data.user as { email: string }).email,
-          firstName: (data.user as { firstName?: string }).firstName,
-          lastName: (data.user as { lastName?: string }).lastName,
+          _id: (data.user as any)._id || (data.user as any).id,
+          email: (data.user as any).email,
+          firstName: (data.user as any).firstName,
+          lastName: (data.user as any).lastName,
           type: data.type as string,
           role: data.role as string,
         });
-
         const isSellerClient = data.type === 'user' && data.role !== 'admin';
         if (isSellerClient) {
           try {
             const res = await apiRequest('/abonnement/my-subscription');
-            if (res.status === 401) {
-              setIsLoading(false);
-              return;
-            }
-            if (!res.ok) {
-              router.replace('/(tabs)');
-              setIsLoading(false);
-              return;
-            }
+            if (res.status === 401) { setIsLoading(false); return; }
+            if (!res.ok) { router.replace('/(tabs)'); setIsLoading(false); return; }
             const subData = await res.json().catch(() => null);
             const now = Date.now();
-            const isExpired =
-              !subData?.ok ||
-              !subData?.hasSubscription ||
-              !subData?.subscription?.date_end ||
-              new Date(subData.subscription.date_end).getTime() < now;
-
+            const isExpired = !subData?.ok || !subData?.hasSubscription || !subData?.subscription?.date_end || new Date(subData.subscription.date_end).getTime() < now;
             if (isExpired) {
               setShowExpiredModal(true);
-              try {
-                await apiRequest('/auth/profile', {
-                  method: 'PUT',
-                  body: JSON.stringify({ status: false }),
-                });
-              } catch {}
-              try {
-                await apiRequest('/abonnement/deactivate', { method: 'POST' });
-              } catch {}
-              setIsLoading(false);
-              return;
+              try { await apiRequest('/auth/profile', { method: 'PUT', body: JSON.stringify({ status: false }) }); } catch {}
+              try { await apiRequest('/abonnement/deactivate', { method: 'POST' }); } catch {}
+              setIsLoading(false); return;
             }
-          } catch {
-            // Network etc. — allow access
-          }
+          } catch {}
         }
-
         router.replace('/(tabs)');
       }
       setIsLoading(false);
-    } catch (error: unknown) {
-      console.error('Login Error:', error);
+    } catch {
       setError(t('login.cannotConnect'));
       setIsLoading(false);
     }
   };
 
   const handleSubmit = async () => {
-    if (!email.trim() || !password.trim()) {
-      setError(t('auth.requiredFields'));
-      return;
-    }
+    if (!email.trim() || !password.trim()) { setError(t('auth.requiredFields')); return; }
     await submitLoginWithCredentials(email.trim(), password);
   };
 
   const handleResendVerification = async () => {
     if (!pendingVerifyEmail.trim()) return;
-    setIsResending(true);
-    setVerifyModalError('');
+    setIsResending(true); setVerifyModalError('');
     try {
-      const response = await apiRequest('/auth/resend-verification', {
-        method: 'POST',
-        body: JSON.stringify({ email: pendingVerifyEmail.trim() }),
-      });
-      let data: { ok?: boolean; sent?: boolean; alreadyVerified?: boolean } = {};
-      try {
-        data = await response.json();
-      } catch {
-        setVerifyModalError(t('login.resendFailed'));
-        setIsResending(false);
-        return;
+      const response = await apiRequest('/auth/resend-verification', { method: 'POST', body: JSON.stringify({ email: pendingVerifyEmail.trim() }) });
+      let data: any = {};
+      try { data = await response.json(); } catch { setVerifyModalError(t('login.resendFailed')); setIsResending(false); return; }
+      if (response.status === 400 && data.alreadyVerified) { setVerifyModalError(t('login.alreadyVerified')); setIsResending(false); return; }
+      if (!response.ok || data.ok !== true) { setVerifyModalError(typeof data.message === 'string' && data.message.trim() !== '' ? data.message : t('login.resendFailed')); setIsResending(false); return; }
+      if (data.sent === true) { Alert.alert('', t('login.resendSuccessSent')); setVerifyInfoBanner(null); }
+      else {
+        const devCode = typeof data.verificationCode === 'string' ? data.verificationCode : '';
+        setVerifyModalError(devCode ? `${t('login.resendFailed')} (${t('login.devCodeHint')}: ${devCode})` : t('login.resendFailed'));
       }
-      if (response.status === 400 && data.alreadyVerified) {
-        setVerifyModalError(t('login.alreadyVerified'));
-        setIsResending(false);
-        return;
-      }
-      if (!response.ok || data.ok !== true) {
-        setVerifyModalError(
-          typeof data.message === 'string' && data.message.trim() !== ''
-            ? data.message
-            : t('login.resendFailed'),
-        );
-        setIsResending(false);
-        return;
-      }
-      if (data.sent === true) {
-        Alert.alert('', t('login.resendSuccessSent'));
-        setVerifyInfoBanner(null);
-      } else {
-        const devCode =
-          typeof (data as { verificationCode?: string }).verificationCode === 'string'
-            ? (data as { verificationCode: string }).verificationCode
-            : '';
-        setVerifyModalError(
-          devCode
-            ? `${t('login.resendFailed')} (${t('login.devCodeHint')}: ${devCode})`
-            : t('login.resendFailed'),
-        );
-      }
-    } catch {
-      setVerifyModalError(t('login.cannotConnect'));
-    } finally {
-      setIsResending(false);
-    }
+    } catch { setVerifyModalError(t('login.cannotConnect')); } finally { setIsResending(false); }
   };
 
   const handleConfirmVerifyCode = async () => {
     const normalized = verifyCode.replace(/\D/g, '');
-    if (normalized.length !== 6) {
-      setVerifyModalError(t('register.codeMustBe6'));
-      return;
-    }
-    setIsVerifyingCode(true);
-    setVerifyModalError('');
+    if (normalized.length !== 6) { setVerifyModalError(t('register.codeMustBe6')); return; }
+    setIsVerifyingCode(true); setVerifyModalError('');
     try {
       const typeForApi = verifyAccountType === 'workshop' ? 'workshop' : 'user';
-      const response = await apiRequest('/auth/verify-email', {
-        method: 'POST',
-        body: JSON.stringify({
-          email: pendingVerifyEmail.trim(),
-          code: normalized,
-          type: typeForApi,
-        }),
-      });
+      const response = await apiRequest('/auth/verify-email', { method: 'POST', body: JSON.stringify({ email: pendingVerifyEmail.trim(), code: normalized, type: typeForApi }) });
       const data = await response.json().catch(() => ({} as Record<string, unknown>));
-      if (!response.ok || data.ok !== true) {
-        const msg =
-          typeof data.message === 'string' && data.message.trim() !== ''
-            ? data.message
-            : t('register.invalidOrExpired');
-        setVerifyModalError(msg);
-        setIsVerifyingCode(false);
-        return;
-      }
-      setShowVerifyEmailModal(false);
-      setVerifyCode('');
-      setVerifyModalError('');
-      setVerifyInfoBanner(null);
+      if (!response.ok || data.ok !== true) { setVerifyModalError(typeof data.message === 'string' && data.message.trim() !== '' ? data.message : t('register.invalidOrExpired')); setIsVerifyingCode(false); return; }
+      setShowVerifyEmailModal(false); setVerifyCode(''); setVerifyModalError(''); setVerifyInfoBanner(null);
       await completeLoginAfterEmailVerification(pendingVerifyEmail.trim(), password);
-    } catch {
-      setVerifyModalError(t('register.invalidOrExpired'));
-    } finally {
-      setIsVerifyingCode(false);
-    }
+    } catch { setVerifyModalError(t('register.invalidOrExpired')); } finally { setIsVerifyingCode(false); }
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+    <View style={styles.container}>
       <StatusBar style="dark" />
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={styles.keyboardView}
-      >
-        <ScrollView
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
+
+      {/* Animated Background */}
+      <LinearGradient
+        colors={['#f8fafc', '#f1f5f9', '#ffffff']}
+        style={StyleSheet.absoluteFillObject}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+      />
+      <AnimatedBlob delay={0} startX={-80} startY={-60} size={260} colors={['rgba(13,148,136,0.1)', 'rgba(20,184,166,0.05)']} />
+      <AnimatedBlob delay={800} startX={SCREEN_WIDTH - 120} startY={SCREEN_HEIGHT * 0.15} size={200} colors={['rgba(56,189,248,0.08)', 'rgba(14,165,233,0.04)']} />
+      <AnimatedBlob delay={1500} startX={SCREEN_WIDTH * 0.3} startY={SCREEN_HEIGHT * 0.65} size={320} colors={['rgba(13,148,136,0.06)', 'rgba(45,212,191,0.03)']} />
+
+      <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.keyboardView}
         >
-          {/* Background decoration */}
-          <View style={styles.backgroundDecoration}>
-            <View style={styles.gradientCircle1} />
-            <View style={styles.gradientCircle2} />
-          </View>
+          <ScrollView
+            contentContainerStyle={styles.scrollContent}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
+            <View style={styles.content}>
+              {/* Logo / Icon */}
+              <Animated.View entering={ZoomIn.duration(700).springify()} style={styles.logoSection}>
+                <Animated.View style={[styles.logoOuter, logoAnimStyle]}>
+                  <LinearGradient
+                    colors={['#0d9488', '#14b8a6', '#2dd4bf']}
+                    style={styles.logoGradient}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                  >
+                    <IconSymbol name="car.fill" size={scale(36)} color="#ffffff" />
+                  </LinearGradient>
+                </Animated.View>
+              </Animated.View>
 
-          <View style={styles.content}>
-            {/* Login Icon */}
-            <Animated.View
-              entering={FadeInDown.duration(600).springify()}
-              style={styles.loginIconContainer}
-            >
-              <LinearGradient
-                colors={['#0d9488', '#14b8a6', '#2dd4bf']}
-                style={styles.loginIconGradient}
-              >
-                <IconSymbol name="person.fill" size={scale(32)} color="#ffffff" />
-              </LinearGradient>
-            </Animated.View>
+              {/* Title */}
+              <Animated.View entering={FadeInDown.duration(600).delay(150).springify()}>
+                <ThemedText style={styles.title}>{t('auth.login')}</ThemedText>
+                <ThemedText style={styles.subtitle}>
+                  {t('login.noAccount').replace(/\s*$/, '') || 'Welcome back to CarSure'}
+                </ThemedText>
+              </Animated.View>
 
-            {/* Login Form */}
-            <Animated.View
-              entering={FadeIn.duration(800).delay(200).springify()}
-              style={styles.formContainer}
-            >
-              <LinearGradient
-                colors={['rgba(255, 255, 255, 0.98)', 'rgba(255, 255, 255, 0.95)']}
-                style={styles.formBlur}
-              >
-                <View style={styles.form}>
-                  {/* Email Input */}
-                  <View style={styles.inputContainer}>
+              {/* Form Card */}
+              <Animated.View entering={FadeInUp.duration(700).delay(300).springify()} style={styles.formCard}>
+                <View style={styles.formCardInner}>
+                  {/* Email */}
+                  <Animated.View entering={FadeInDown.duration(500).delay(400)} style={styles.fieldGroup}>
                     <ThemedText style={styles.label}>{t('auth.email')}</ThemedText>
-                    <View style={styles.inputWrapper}>
-                      <View style={styles.inputIconContainer}>
-                        <IconSymbol name="message.fill" size={18} color="#0d9488" />
-                      </View>
-                      <TextInput
-                        style={styles.input}
-                        placeholder="email@example.com"
-                        placeholderTextColor="#9ca3af"
-                        value={email}
-                        onChangeText={(text) => {
-                          setEmail(text);
-                          setError('');
-                        }}
-                        keyboardType="email-address"
-                        autoCapitalize="none"
-                        autoComplete="email"
-                      />
-                    </View>
-                  </View>
+                    <FocusableInput
+                      icon="envelope.fill"
+                      placeholder="email@example.com"
+                      value={email}
+                      onChangeText={(text) => { setEmail(text); setError(''); }}
+                      keyboardType="email-address"
+                      autoCapitalize="none"
+                      autoComplete="email"
+                    />
+                  </Animated.View>
 
-                  {/* Password Input */}
-                  <View style={styles.inputContainer}>
+                  {/* Password */}
+                  <Animated.View entering={FadeInDown.duration(500).delay(500)} style={styles.fieldGroup}>
                     <ThemedText style={styles.label}>{t('auth.password')}</ThemedText>
-                    <View style={styles.inputWrapper}>
-                      <View style={styles.inputIconContainer}>
-                        <IconSymbol name="shield.fill" size={18} color="#0d9488" />
-                      </View>
-                      <TextInput
-                        style={styles.input}
-                        placeholder="••••••••"
-                        placeholderTextColor="#9ca3af"
-                        value={password}
-                        onChangeText={(text) => {
-                          setPassword(text);
-                          setError('');
-                        }}
-                        secureTextEntry={!showPassword}
-                        autoCapitalize="none"
-                        autoComplete="password"
-                      />
-                      <TouchableOpacity
-                        onPress={() => setShowPassword(!showPassword)}
-                        style={styles.eyeButton}
-                      >
-                        <IconSymbol
-                          name={showPassword ? 'checkmark.circle.fill' : 'shield.fill'}
-                          size={20}
-                          color="#6b7280"
-                        />
-                      </TouchableOpacity>
-                    </View>
-                  </View>
+                    <FocusableInput
+                      icon="lock.fill"
+                      placeholder="••••••••"
+                      value={password}
+                      onChangeText={(text) => { setPassword(text); setError(''); }}
+                      secureTextEntry={!showPassword}
+                      autoCapitalize="none"
+                      autoComplete="password"
+                      showToggle
+                      onToggle={() => setShowPassword(!showPassword)}
+                      toggleActive={showPassword}
+                    />
+                  </Animated.View>
 
-                  {/* Error Message */}
+                  {/* Error */}
                   {error ? (
-                    <View style={styles.errorContainer}>
+                    <Animated.View entering={FadeIn.duration(300)} style={styles.errorContainer}>
                       <IconSymbol name="exclamationmark.triangle.fill" size={16} color="#ef4444" />
                       <ThemedText style={styles.errorText}>{error}</ThemedText>
-                    </View>
+                    </Animated.View>
                   ) : null}
 
-                  {/* Remember Me */}
-                  <View style={styles.optionsRow}>
-                    <TouchableOpacity style={styles.rememberMe}>
-                      <View style={styles.checkbox} />
-                      <ThemedText style={styles.rememberMeText}>
-                        {t('login.rememberMe')}
-                      </ThemedText>
-                    </TouchableOpacity>
-                  </View>
-
                   {/* Forgot Password */}
-                  <View style={styles.forgotPasswordContainer}>
-                    <TouchableOpacity onPress={() => router.push('/forgot-password')}>
-                      <ThemedText style={styles.forgotPasswordText}>
-                        {t('login.forgotPassword')}
-                      </ThemedText>
+                  <Animated.View entering={FadeInDown.duration(500).delay(600)}>
+                    <TouchableOpacity onPress={() => router.push('/forgot-password')} style={styles.forgotRow}>
+                      <ThemedText style={styles.forgotText}>{t('login.forgotPassword')}</ThemedText>
                     </TouchableOpacity>
-                  </View>
+                  </Animated.View>
 
                   {/* Submit Button */}
-                  <TouchableOpacity
-                    onPress={handleSubmit}
-                    disabled={isLoading}
-                    style={styles.submitButton}
-                    activeOpacity={0.8}
-                  >
-                    <LinearGradient
-                      colors={['#0d9488', '#14b8a6']}
-                      style={styles.submitButtonGradient}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 0 }}
+                  <Animated.View entering={FadeInDown.duration(600).delay(700)} style={styles.buttonWrap}>
+                    <AnimatedTouchableOpacity
+                      onPress={handleSubmit}
+                      onPressIn={onButtonPressIn}
+                      onPressOut={onButtonPressOut}
+                      disabled={isLoading}
+                      activeOpacity={0.9}
+                      style={[styles.submitButton, buttonAnimStyle]}
                     >
-                      {isLoading ? (
-                        <ActivityIndicator color="#ffffff" />
-                      ) : (
-                        <ThemedText style={styles.submitButtonText}>
-                          {t('auth.login')}
-                        </ThemedText>
-                      )}
-                    </LinearGradient>
-                  </TouchableOpacity>
+                      <LinearGradient
+                        colors={['#0d9488', '#14b8a6', '#2dd4bf']}
+                        style={styles.submitGradient}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 1, y: 0 }}
+                      >
+                        {isLoading ? (
+                          <ActivityIndicator color="#ffffff" />
+                        ) : (
+                          <>
+                            <ThemedText style={styles.submitText}>{t('auth.login')}</ThemedText>
+                            <IconSymbol name="arrow.right" size={18} color="#ffffff" />
+                          </>
+                        )}
+                      </LinearGradient>
+                    </AnimatedTouchableOpacity>
+                  </Animated.View>
 
                   {/* Register Link */}
-                  <View style={styles.registerLink}>
-                    <ThemedText style={styles.registerText}>
-                      {t('login.noAccount')}{' '}
-                    </ThemedText>
+                  <Animated.View entering={FadeIn.duration(500).delay(850)} style={styles.registerRow}>
+                    <ThemedText style={styles.registerText}>{t('login.noAccount')} </ThemedText>
                     <TouchableOpacity onPress={() => router.push('/register')}>
-                      <ThemedText style={styles.registerLinkText}>
-                        {t('auth.register')}
-                      </ThemedText>
+                      <ThemedText style={styles.registerLink}>{t('auth.register')}</ThemedText>
                     </TouchableOpacity>
-                  </View>
+                  </Animated.View>
                 </View>
-              </LinearGradient>
-            </Animated.View>
+              </Animated.View>
 
-            {/* Back to Home */}
-            <TouchableOpacity
-              onPress={() => router.replace('/(tabs)')}
-              style={styles.backButton}
-            >
-              <IconSymbol name="chevron.left" size={16} color="#6b7280" />
-              <ThemedText style={styles.backButtonText}>{t('login.back')}</ThemedText>
-            </TouchableOpacity>
-          </View>
-        </ScrollView>
-      </KeyboardAvoidingView>
+              {/* Back to Home */}
+              <Animated.View entering={FadeIn.duration(500).delay(950)}>
+                <TouchableOpacity onPress={() => router.replace('/(tabs)')} style={styles.backButton}>
+                  <IconSymbol name="chevron.left" size={14} color="#94a3b8" />
+                  <ThemedText style={styles.backText}>{t('login.back')}</ThemedText>
+                </TouchableOpacity>
+              </Animated.View>
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
 
-      {/* Activation Required Modal */}
+      {/* ──── MODALS ──── */}
+
+      {/* Activation Required */}
       {showActivationModal && (
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <LinearGradient
-              colors={['rgba(255, 255, 255, 0.98)', 'rgba(255, 255, 255, 0.95)']}
-              style={styles.modalBlur}
-            >
-              <View style={styles.modalIconContainer}>
-                <IconSymbol name="checkmark.circle.fill" size={48} color="#f59e0b" />
+          <Animated.View entering={ZoomIn.duration(400).springify()} style={styles.modalContent}>
+            <LinearGradient colors={['#ffffff', '#f8fafc']} style={styles.modalInner}>
+              <View style={[styles.modalIconCircle, { backgroundColor: '#fef3c7' }]}>
+                <IconSymbol name="checkmark.circle.fill" size={32} color="#f59e0b" />
               </View>
-              <ThemedText style={styles.modalTitle}>
-                {t('login.activationTitle')}
-              </ThemedText>
-              <ThemedText style={styles.modalText}>
-                {t('login.activationBody')}
-              </ThemedText>
-              <TouchableOpacity
-                onPress={() => setShowActivationModal(false)}
-                style={styles.modalButton}
-              >
-                <LinearGradient
-                  colors={['#0d9488', '#14b8a6']}
-                  style={styles.modalButtonGradient}
-                >
-                  <ThemedText style={styles.modalButtonText}>{t('login.activationOk')}</ThemedText>
+              <ThemedText style={styles.modalTitle}>{t('login.activationTitle')}</ThemedText>
+              <ThemedText style={styles.modalText}>{t('login.activationBody')}</ThemedText>
+              <TouchableOpacity onPress={() => setShowActivationModal(false)} style={styles.modalBtn}>
+                <LinearGradient colors={['#0d9488', '#14b8a6']} style={styles.modalBtnGradient}>
+                  <ThemedText style={styles.modalBtnText}>{t('login.activationOk')}</ThemedText>
                 </LinearGradient>
               </TouchableOpacity>
             </LinearGradient>
-          </View>
+          </Animated.View>
         </View>
       )}
 
-      {/* Email not verified — same flow as web: code + resend + optional server message */}
+      {/* Email Verification */}
       {showVerifyEmailModal && (
         <View style={styles.modalOverlay}>
-          <View key={i18n.language} style={[styles.modalContent, styles.verifyModalContent]}>
-            <ScrollView
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator={false}
-              contentContainerStyle={styles.verifyModalScroll}
-            >
-              <LinearGradient
-                colors={['rgba(255, 255, 255, 0.98)', 'rgba(255, 255, 255, 0.95)']}
-                style={styles.verifyModalInner}
-              >
-                <View style={styles.verifyBlueIconWrap}>
+          <Animated.View entering={ZoomIn.duration(400).springify()} key={i18n.language} style={[styles.modalContent, { maxHeight: '92%' }]}>
+            <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+              <LinearGradient colors={['#ffffff', '#f8fafc']} style={styles.modalInner}>
+                <View style={[styles.modalIconCircle, { backgroundColor: '#dbeafe' }]}>
                   <IconSymbol name="envelope.fill" size={scale(28)} color="#2563eb" />
                 </View>
-                <ThemedText style={styles.verifyModalTitle}>{t('login.confirmEmailTitle')}</ThemedText>
-                <ThemedText style={styles.verifyModalSubtitle}>{t('login.confirmEmailSubtitle')}</ThemedText>
-                <ThemedText style={styles.verifyModalEmail}>{pendingVerifyEmail}</ThemedText>
+                <ThemedText style={styles.modalTitle}>{t('login.confirmEmailTitle')}</ThemedText>
+                <ThemedText style={styles.modalSubtext}>{t('login.confirmEmailSubtitle')}</ThemedText>
+                <ThemedText style={styles.modalEmailHighlight}>{pendingVerifyEmail}</ThemedText>
 
                 {verifyInfoBanner ? (
-                  <View style={styles.verifyInfoBanner}>
-                    <ThemedText style={styles.verifyInfoBannerText}>{verifyInfoBanner}</ThemedText>
+                  <View style={styles.verifyBanner}>
+                    <ThemedText style={styles.verifyBannerText}>{verifyInfoBanner}</ThemedText>
                   </View>
                 ) : null}
 
-                <View style={styles.verifyModalField}>
-                  <ThemedText style={styles.verifyModalLabel}>{t('login.confirmationCodeLabel')}</ThemedText>
+                <View style={styles.verifyField}>
+                  <ThemedText style={styles.verifyLabel}>{t('login.confirmationCodeLabel')}</ThemedText>
                   <TextInput
-                    style={styles.verifyModalInput}
+                    style={styles.verifyInput}
                     placeholder={t('register.verifyCodePlaceholder')}
-                    placeholderTextColor="#9ca3af"
+                    placeholderTextColor="#94a3b8"
                     value={verifyCode}
-                    onChangeText={(v) => {
-                      setVerifyCode(v.replace(/\D/g, '').slice(0, 6));
-                      setVerifyModalError('');
-                    }}
+                    onChangeText={(v) => { setVerifyCode(v.replace(/\D/g, '').slice(0, 6)); setVerifyModalError(''); }}
                     keyboardType="number-pad"
                     maxLength={6}
                   />
                 </View>
 
                 {verifyModalError ? (
-                  <View style={styles.verifyModalErrorBox}>
-                    <ThemedText style={styles.verifyModalError}>{verifyModalError}</ThemedText>
+                  <View style={styles.verifyErrorBox}>
+                    <ThemedText style={styles.verifyErrorText}>{verifyModalError}</ThemedText>
                   </View>
                 ) : null}
 
                 <TouchableOpacity
                   onPress={handleConfirmVerifyCode}
                   disabled={isVerifyingCode || verifyCode.replace(/\D/g, '').length !== 6}
-                  style={[
-                    styles.modalButton,
-                    styles.verifyModalPrimaryMargin,
-                    (isVerifyingCode || verifyCode.replace(/\D/g, '').length !== 6) &&
-                      styles.modalButtonDisabled,
-                  ]}
+                  style={[styles.modalBtn, (isVerifyingCode || verifyCode.replace(/\D/g, '').length !== 6) && { opacity: 0.5 }]}
                 >
-                  <LinearGradient
-                    colors={['#14b8a6', '#0d9488']}
-                    style={[styles.modalButtonGradient, isVerifyingCode && styles.modalButtonGradientRow]}
-                  >
-                    {isVerifyingCode ? (
-                      <>
-                        <ActivityIndicator color="#ffffff" />
-                        <ThemedText style={styles.modalButtonText}>{t('login.verifyingCode')}</ThemedText>
-                      </>
-                    ) : (
-                      <ThemedText style={styles.modalButtonText}>{t('login.confirmCodeButton')}</ThemedText>
-                    )}
+                  <LinearGradient colors={['#14b8a6', '#0d9488']} style={[styles.modalBtnGradient, isVerifyingCode && { flexDirection: 'row', gap: scale(10) }]}>
+                    {isVerifyingCode ? <><ActivityIndicator color="#ffffff" /><ThemedText style={styles.modalBtnText}>{t('login.verifyingCode')}</ThemedText></> : <ThemedText style={styles.modalBtnText}>{t('login.confirmCodeButton')}</ThemedText>}
                   </LinearGradient>
                 </TouchableOpacity>
 
-                <TouchableOpacity
-                  onPress={handleResendVerification}
-                  disabled={isResending}
-                  style={[styles.resendCodeButton, isResending && styles.modalButtonDisabled]}
-                >
-                  {isResending ? (
-                    <ActivityIndicator color="#374151" />
-                  ) : (
-                    <ThemedText style={styles.resendCodeButtonText}>
-                      {t('login.resendVerificationEmail')}
-                    </ThemedText>
-                  )}
+                <TouchableOpacity onPress={handleResendVerification} disabled={isResending} style={[styles.resendBtn, isResending && { opacity: 0.5 }]}>
+                  {isResending ? <ActivityIndicator color="#374151" /> : <ThemedText style={styles.resendBtnText}>{t('login.resendVerificationEmail')}</ThemedText>}
                 </TouchableOpacity>
 
-                <TouchableOpacity
-                  onPress={() => {
-                    setShowVerifyEmailModal(false);
-                    setVerifyCode('');
-                    setVerifyModalError('');
-                    setVerifyInfoBanner(null);
-                  }}
-                  style={styles.modalButton}
-                >
-                  <ThemedText style={styles.verifyModalDismiss}>{t('common.cancel')}</ThemedText>
+                <TouchableOpacity onPress={() => { setShowVerifyEmailModal(false); setVerifyCode(''); setVerifyModalError(''); setVerifyInfoBanner(null); }}>
+                  <ThemedText style={styles.modalDismiss}>{t('common.cancel')}</ThemedText>
                 </TouchableOpacity>
               </LinearGradient>
             </ScrollView>
-          </View>
+          </Animated.View>
         </View>
       )}
 
-      {/* Email confirmed — second step like web */}
+      {/* Email Confirmed */}
       {showEmailConfirmedModal && (
         <View style={styles.modalOverlay}>
-          <View key={`confirmed-${i18n.language}`} style={styles.modalContent}>
-            <LinearGradient
-              colors={['rgba(255, 255, 255, 0.98)', 'rgba(255, 255, 255, 0.95)']}
-              style={styles.modalBlur}
-            >
-              <View
-                style={[
-                  styles.emailConfirmedIconWrap,
-                  confirmedEmailHasAccess ? styles.emailConfirmedIconOk : styles.emailConfirmedIconWarn,
-                ]}
-              >
-                <IconSymbol
-                  name={confirmedEmailHasAccess ? 'checkmark.circle.fill' : 'exclamationmark.triangle.fill'}
-                  size={scale(36)}
-                  color={confirmedEmailHasAccess ? '#16a34a' : '#ca8a04'}
-                />
+          <Animated.View entering={ZoomIn.duration(400).springify()} key={`confirmed-${i18n.language}`} style={styles.modalContent}>
+            <LinearGradient colors={['#ffffff', '#f8fafc']} style={styles.modalInner}>
+              <View style={[styles.modalIconCircle, { backgroundColor: confirmedEmailHasAccess ? '#dcfce7' : '#fef9c3' }]}>
+                <IconSymbol name={confirmedEmailHasAccess ? 'checkmark.circle.fill' : 'exclamationmark.triangle.fill'} size={scale(36)} color={confirmedEmailHasAccess ? '#16a34a' : '#ca8a04'} />
               </View>
               <ThemedText style={styles.modalTitle}>{t('login.emailConfirmedTitle')}</ThemedText>
-              <ThemedText style={styles.modalText}>
-                {confirmedEmailHasAccess
-                  ? t('login.emailConfirmedBodyHasAccess')
-                  : t('login.emailConfirmedBodyNoAccess')}
-              </ThemedText>
+              <ThemedText style={styles.modalText}>{confirmedEmailHasAccess ? t('login.emailConfirmedBodyHasAccess') : t('login.emailConfirmedBodyNoAccess')}</ThemedText>
               {confirmedEmailHasAccess ? (
-                <TouchableOpacity
-                  onPress={() => {
-                    setShowEmailConfirmedModal(false);
-                    router.replace('/(tabs)');
-                  }}
-                  style={styles.modalButton}
-                >
-                  <LinearGradient colors={['#14b8a6', '#0d9488']} style={styles.modalButtonGradient}>
-                    <ThemedText style={styles.modalButtonText}>{t('login.goToMySpace')}</ThemedText>
-                  </LinearGradient>
+                <TouchableOpacity onPress={() => { setShowEmailConfirmedModal(false); router.replace('/(tabs)'); }} style={styles.modalBtn}>
+                  <LinearGradient colors={['#14b8a6', '#0d9488']} style={styles.modalBtnGradient}><ThemedText style={styles.modalBtnText}>{t('login.goToMySpace')}</ThemedText></LinearGradient>
                 </TouchableOpacity>
               ) : (
-                <TouchableOpacity
-                  onPress={() => setShowEmailConfirmedModal(false)}
-                  style={styles.modalButton}
-                >
-                  <LinearGradient colors={['#64748b', '#475569']} style={styles.modalButtonGradient}>
-                    <ThemedText style={styles.modalButtonText}>{t('login.activationOk')}</ThemedText>
-                  </LinearGradient>
+                <TouchableOpacity onPress={() => setShowEmailConfirmedModal(false)} style={styles.modalBtn}>
+                  <LinearGradient colors={['#64748b', '#475569']} style={styles.modalBtnGradient}><ThemedText style={styles.modalBtnText}>{t('login.activationOk')}</ThemedText></LinearGradient>
                 </TouchableOpacity>
               )}
             </LinearGradient>
-          </View>
+          </Animated.View>
         </View>
       )}
 
-      {/* Admin: web only — no app access */}
+      {/* Admin Web Only */}
       {showAdminWebModal && (
         <View style={styles.modalOverlay}>
-          <View key={i18n.language} style={styles.modalContent}>
-            <LinearGradient
-              colors={['rgba(255, 255, 255, 0.98)', 'rgba(255, 255, 255, 0.95)']}
-              style={styles.modalBlur}
-            >
-              <View style={styles.modalIconContainer}>
-                <IconSymbol name="lock.fill" size={48} color="#64748b" />
+          <Animated.View entering={ZoomIn.duration(400).springify()} key={i18n.language} style={styles.modalContent}>
+            <LinearGradient colors={['#ffffff', '#f8fafc']} style={styles.modalInner}>
+              <View style={[styles.modalIconCircle, { backgroundColor: '#e2e8f0' }]}>
+                <IconSymbol name="lock.fill" size={32} color="#64748b" />
               </View>
               <ThemedText style={styles.modalTitle}>{t('login.adminWebOnlyTitle')}</ThemedText>
               <ThemedText style={styles.modalText}>{t('login.adminWebOnlyBody')}</ThemedText>
-              <ThemedText style={[styles.modalText, { fontWeight: '700', color: '#0d9488' }]}>
-                {ADMIN_WEB_APP_URL}
-              </ThemedText>
+              <ThemedText style={[styles.modalText, { fontWeight: '700', color: '#0d9488', marginBottom: 16 }]}>{ADMIN_WEB_APP_URL}</ThemedText>
               <View style={{ width: '100%', gap: 10 }}>
-                <TouchableOpacity
-                  onPress={async () => {
-                    try {
-                      await Linking.openURL(ADMIN_WEB_APP_URL);
-                    } catch {}
-                  }}
-                  style={styles.modalButton}
-                >
-                  <LinearGradient
-                    colors={['#0d9488', '#14b8a6']}
-                    style={styles.modalButtonGradient}
-                  >
-                    <ThemedText style={styles.modalButtonText}>
-                      {t('login.adminWebOpenSite')}
-                    </ThemedText>
-                  </LinearGradient>
+                <TouchableOpacity onPress={async () => { try { await Linking.openURL(ADMIN_WEB_APP_URL); } catch {} }} style={styles.modalBtn}>
+                  <LinearGradient colors={['#0d9488', '#14b8a6']} style={styles.modalBtnGradient}><ThemedText style={styles.modalBtnText}>{t('login.adminWebOpenSite')}</ThemedText></LinearGradient>
                 </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={() => setShowAdminWebModal(false)}
-                  style={styles.modalButton}
-                >
-                  <LinearGradient
-                    colors={['#64748b', '#475569']}
-                    style={styles.modalButtonGradient}
-                  >
-                    <ThemedText style={styles.modalButtonText}>{t('common.ok')}</ThemedText>
-                  </LinearGradient>
+                <TouchableOpacity onPress={() => setShowAdminWebModal(false)} style={styles.modalBtn}>
+                  <LinearGradient colors={['#64748b', '#475569']} style={styles.modalBtnGradient}><ThemedText style={styles.modalBtnText}>{t('common.ok')}</ThemedText></LinearGradient>
                 </TouchableOpacity>
               </View>
             </LinearGradient>
-          </View>
+          </Animated.View>
         </View>
       )}
 
-      {/* Subscription Expired Modal */}
+      {/* Subscription Expired */}
       {showExpiredModal && (
         <View style={styles.modalOverlay}>
-          <View key={i18n.language} style={styles.modalContent}>
-            <LinearGradient
-              colors={['rgba(255, 255, 255, 0.98)', 'rgba(255, 255, 255, 0.95)']}
-              style={styles.modalBlur}
-            >
-              <View style={styles.modalIconContainer}>
-                <IconSymbol name="exclamationmark.triangle.fill" size={48} color="#f59e0b" />
+          <Animated.View entering={ZoomIn.duration(400).springify()} key={i18n.language} style={styles.modalContent}>
+            <LinearGradient colors={['#ffffff', '#f8fafc']} style={styles.modalInner}>
+              <View style={[styles.modalIconCircle, { backgroundColor: '#fef3c7' }]}>
+                <IconSymbol name="exclamationmark.triangle.fill" size={32} color="#f59e0b" />
               </View>
-              <ThemedText style={styles.modalTitle}>
-                {t('subscription.expiredTitle')}
-              </ThemedText>
-              <ThemedText style={styles.modalText}>
-                {t('subscription.expiredContactBody')}
-              </ThemedText>
+              <ThemedText style={styles.modalTitle}>{t('subscription.expiredTitle')}</ThemedText>
+              <ThemedText style={styles.modalText}>{t('subscription.expiredContactBody')}</ThemedText>
               <View style={{ width: '100%', gap: 10 }}>
-                <TouchableOpacity
-                  onPress={async () => {
-                    try {
-                      await Linking.openURL(`tel:${SUPPORT_PHONE}`);
-                    } catch {}
-                  }}
-                  style={styles.modalButton}
-                >
-                  <LinearGradient
-                    colors={['#0d9488', '#14b8a6']}
-                    style={styles.modalButtonGradient}
-                  >
-                    <ThemedText style={styles.modalButtonText}>
-                      {t('subscription.callSupport')} • {SUPPORT_PHONE}
-                    </ThemedText>
-                  </LinearGradient>
+                <TouchableOpacity onPress={async () => { try { await Linking.openURL(`tel:${SUPPORT_PHONE}`); } catch {} }} style={styles.modalBtn}>
+                  <LinearGradient colors={['#0d9488', '#14b8a6']} style={styles.modalBtnGradient}><ThemedText style={styles.modalBtnText}>{t('subscription.callSupport')} • {SUPPORT_PHONE}</ThemedText></LinearGradient>
                 </TouchableOpacity>
-              <TouchableOpacity
-                onPress={async () => {
-                  try {
-                    await logout();
-                  } finally {
-                    setShowExpiredModal(false);
-                    // Stay on login screen (no navigation) until user proceeds manually.
-                  }
-                }}
-                style={styles.modalButton}
-              >
-                <LinearGradient
-                  colors={['#64748b', '#475569']}
-                  style={styles.modalButtonGradient}
-                >
-                  <ThemedText style={styles.modalButtonText}>{t('common.ok')}</ThemedText>
-                </LinearGradient>
-              </TouchableOpacity>
+                <TouchableOpacity onPress={async () => { try { await logout(); } finally { setShowExpiredModal(false); } }} style={styles.modalBtn}>
+                  <LinearGradient colors={['#64748b', '#475569']} style={styles.modalBtnGradient}><ThemedText style={styles.modalBtnText}>{t('common.ok')}</ThemedText></LinearGradient>
+                </TouchableOpacity>
               </View>
             </LinearGradient>
-          </View>
+          </Animated.View>
         </View>
       )}
-    </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#fafbfc',
-  },
-  keyboardView: {
-    flex: 1,
-  },
-  scrollContent: {
-    flexGrow: 1,
-    paddingBottom: 40,
-  },
-  backgroundDecoration: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-  },
-  gradientCircle1: {
-    position: 'absolute',
-    top: -100,
-    left: -100,
-    width: 300,
-    height: 300,
-    borderRadius: 150,
-    backgroundColor: 'rgba(14, 165, 233, 0.1)',
-  },
-  gradientCircle2: {
-    position: 'absolute',
-    bottom: -100,
-    right: -100,
-    width: 400,
-    height: 400,
-    borderRadius: 200,
-    backgroundColor: 'rgba(20, 184, 166, 0.1)',
-  },
-  content: {
-    flex: 1,
-    justifyContent: 'center',
-    paddingHorizontal: padding.large,
-    paddingTop: padding.large * 2,
-  },
-  header: {
-    alignItems: 'center',
-    marginBottom: padding.large * 2,
-  },
-  logoContainer: {
-    width: scale(80),
-    height: scale(80),
-    borderRadius: scale(20),
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 20,
+  container: { flex: 1, backgroundColor: '#f8fafc' },
+  safeArea: { flex: 1 },
+  keyboardView: { flex: 1 },
+  scrollContent: { flexGrow: 1, paddingBottom: 40 },
+  content: { flex: 1, justifyContent: 'center', paddingHorizontal: scale(24), paddingTop: scale(20) },
+
+  logoSection: { alignItems: 'center', marginBottom: scale(24) },
+  logoOuter: {
     ...Platform.select({
-      ios: {
-        shadowColor: '#0d9488',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.3,
-        shadowRadius: 12,
-      },
-      android: {
-        elevation: 8,
-      },
+      ios: { shadowColor: '#14b8a6', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 20 },
+      android: { elevation: 12 },
     }),
   },
-  title: {
-    fontSize: fontSizes['3xl'],
-    fontWeight: '800',
-    color: '#1f2937',
-    marginBottom: padding.small,
-    textAlign: 'center',
-  },
-  subtitle: {
-    fontSize: fontSizes.md,
-    color: '#6b7280',
-    textAlign: 'center',
-  },
-  formContainer: {
+  logoGradient: { width: scale(80), height: scale(80), borderRadius: scale(24), alignItems: 'center', justifyContent: 'center' },
+
+  title: { fontSize: fontSizes['3xl'], fontWeight: '900', color: '#0f172a', textAlign: 'center', marginBottom: scale(6), letterSpacing: 0.5 },
+  subtitle: { fontSize: fontSizes.md, color: '#64748b', textAlign: 'center', marginBottom: scale(28) },
+
+  formCard: {
     borderRadius: scale(24),
     overflow: 'hidden',
-    marginBottom: 24,
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: 'rgba(0,0,0,0.06)',
+    marginBottom: scale(16),
     ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.1,
-        shadowRadius: 12,
-      },
-      android: {
-        elevation: 8,
-      },
+      ios: { shadowColor: '#94a3b8', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.15, shadowRadius: 24 },
+      android: { elevation: 10 },
     }),
   },
-  formBlur: {
-    borderRadius: 24,
-    borderWidth: 1,
-    borderColor: 'rgba(0, 0, 0, 0.05)',
-  },
-  form: {
-    padding: 24,
-  },
-  inputContainer: {
-    marginBottom: 20,
-  },
-  label: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#374151',
-    marginBottom: 8,
-  },
+  formCardInner: { padding: scale(24) },
+
+  fieldGroup: { marginBottom: scale(20) },
+  label: { fontSize: fontSizes.sm, fontWeight: '700', color: '#374151', marginBottom: scale(8), letterSpacing: 0.3 },
   inputWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#f9fafb',
-    borderRadius: scale(12),
-    borderWidth: 2,
-    borderColor: '#e5e7eb',
+    backgroundColor: '#f8fafc',
+    borderRadius: scale(14),
+    borderWidth: 1.5,
+    borderColor: '#e2e8f0',
+    shadowColor: '#0d9488',
+    shadowOffset: { width: 0, height: 0 },
   },
   inputIconContainer: {
     width: scale(44),
@@ -990,333 +751,69 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: '#f0fdfa',
     borderRadius: scale(12),
-    marginRight: padding.small,
+    marginLeft: scale(4),
   },
-  input: {
-    flex: 1,
-    height: scale(44),
-    fontSize: fontSizes.md,
-    color: '#1f2937',
-    paddingRight: 12,
-  },
-  eyeButton: {
-    padding: 12,
-  },
+  inputIconContainerFocused: { backgroundColor: '#ccfbf1' },
+  input: { flex: 1, height: scale(48), fontSize: fontSizes.md, color: '#1e293b', paddingHorizontal: scale(12) },
+  eyeButton: { padding: scale(12) },
+
   errorContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-    padding: 12,
+    gap: scale(8),
+    padding: scale(12),
     backgroundColor: '#fef2f2',
-    borderRadius: 12,
+    borderRadius: scale(12),
     borderWidth: 1,
     borderColor: '#fecaca',
-    marginBottom: 16,
+    marginBottom: scale(12),
   },
-  errorText: {
-    flex: 1,
-    fontSize: 14,
-    color: '#ef4444',
-    fontWeight: '500',
-  },
-  loginIconContainer: {
-    alignItems: 'center',
-    marginBottom: padding.large,
-  },
-  loginIconGradient: {
-    width: scale(80),
-    height: scale(80),
-    borderRadius: scale(20),
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: padding.medium,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#0d9488',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.3,
-        shadowRadius: 12,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
-  },
-  optionsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: padding.small,
-  },
-  rememberMe: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  checkbox: {
-    width: 18,
-    height: 18,
-    borderRadius: 4,
-    borderWidth: 2,
-    borderColor: '#0d9488',
-  },
-  rememberMeText: {
-    fontSize: 14,
-    color: '#6b7280',
-  },
-  forgotPasswordContainer: {
-    alignItems: 'center',
-    marginBottom: padding.medium,
-  },
-  forgotPasswordText: {
-    fontSize: fontSizes.sm,
-    color: '#0d9488',
-    fontWeight: '600',
-  },
+  errorText: { flex: 1, fontSize: fontSizes.sm, color: '#dc2626', fontWeight: '500' },
+
+  forgotRow: { alignItems: 'flex-end', marginBottom: scale(24) },
+  forgotText: { fontSize: fontSizes.sm, color: '#0d9488', fontWeight: '600' },
+
+  buttonWrap: { marginBottom: scale(20) },
   submitButton: {
-    borderRadius: 14,
+    borderRadius: scale(16),
     overflow: 'hidden',
-    marginBottom: 20,
     ...Platform.select({
-      ios: {
-        shadowColor: '#0d9488',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.3,
-        shadowRadius: 8,
-      },
-      android: {
-        elevation: 6,
-      },
+      ios: { shadowColor: '#14b8a6', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.35, shadowRadius: 14 },
+      android: { elevation: 10 },
     }),
   },
-  submitButtonGradient: {
-    paddingVertical: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  submitButtonText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#ffffff',
-  },
-  registerLink: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-  },
-  registerText: {
-    fontSize: 14,
-    color: '#6b7280',
-  },
-  registerLinkText: {
-    fontSize: 14,
-    color: '#0d9488',
-    fontWeight: '600',
-  },
-  backButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    marginTop: 20,
-  },
-  backButtonText: {
-    fontSize: 14,
-    color: '#6b7280',
-    fontWeight: '500',
-  },
-  modalOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 24,
-    zIndex: 9999,
-    elevation: 9999,
-  },
-  modalContent: {
-    width: '100%',
-    maxWidth: 400,
-    borderRadius: 24,
-    overflow: 'hidden',
-    zIndex: 10000,
-    elevation: 10000,
-  },
-  modalBlur: {
-    padding: 32,
-    alignItems: 'center',
-  },
-  modalIconContainer: {
-    marginBottom: 20,
-  },
-  modalTitle: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: '#1f2937',
-    marginBottom: 12,
-    textAlign: 'center',
-  },
-  modalText: {
-    fontSize: 15,
-    color: '#6b7280',
-    textAlign: 'center',
-    marginBottom: 24,
-    lineHeight: 22,
-  },
-  modalButton: {
-    borderRadius: 12,
-    overflow: 'hidden',
-    width: '100%',
-  },
-  modalButtonDisabled: {
-    opacity: 0.5,
-  },
-  modalButtonGradient: {
-    paddingVertical: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modalButtonGradientRow: {
-    flexDirection: 'row',
-    gap: scale(10),
-  },
-  modalButtonText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#ffffff',
-  },
-  verifyModalContent: {
-    maxHeight: '92%',
-  },
-  verifyModalScroll: {
-    flexGrow: 1,
-  },
-  verifyModalInner: {
-    padding: scale(28),
-    alignItems: 'center',
-    borderRadius: scale(24),
-  },
-  verifyBlueIconWrap: {
-    width: scale(64),
-    height: scale(64),
-    borderRadius: scale(32),
-    backgroundColor: '#dbeafe',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: scale(16),
-  },
-  verifyModalTitle: {
-    fontSize: fontSizes.xl,
-    fontWeight: '800',
-    color: '#111827',
-    textAlign: 'center',
-    marginBottom: scale(8),
-  },
-  verifyModalSubtitle: {
-    fontSize: fontSizes.sm,
-    color: '#6b7280',
-    textAlign: 'center',
-    lineHeight: scale(20),
-    marginBottom: scale(8),
-    paddingHorizontal: scale(4),
-  },
-  verifyInfoBanner: {
-    width: '100%',
-    backgroundColor: '#fffbeb',
-    borderWidth: 1,
-    borderColor: '#fde68a',
-    borderRadius: scale(12),
-    padding: scale(12),
-    marginBottom: scale(12),
-  },
-  verifyInfoBannerText: {
-    fontSize: fontSizes.sm,
-    color: '#92400e',
-    lineHeight: scale(20),
-  },
-  verifyModalEmail: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#0d9488',
-    textAlign: 'center',
-    marginBottom: 16,
-    width: '100%',
-  },
-  verifyModalField: {
-    width: '100%',
-    marginBottom: 8,
-  },
-  verifyModalLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#374151',
-    marginBottom: 8,
-    alignSelf: 'flex-start',
-  },
-  verifyModalInput: {
-    width: '100%',
-    height: scale(48),
-    fontSize: fontSizes.lg,
-    color: '#1f2937',
-    backgroundColor: '#f9fafb',
-    borderRadius: scale(12),
-    borderWidth: 2,
-    borderColor: '#e5e7eb',
-    paddingHorizontal: 16,
-    textAlign: 'center',
-    letterSpacing: 4,
-  },
-  verifyModalError: {
-    fontSize: 14,
-    color: '#b91c1c',
-    textAlign: 'center',
-    width: '100%',
-  },
-  verifyModalErrorBox: {
-    width: '100%',
-    backgroundColor: '#fef2f2',
-    borderWidth: 1,
-    borderColor: '#fecaca',
-    borderRadius: scale(12),
-    padding: scale(12),
-    marginBottom: scale(12),
-  },
-  verifyModalPrimaryMargin: {
-    marginBottom: 10,
-  },
-  resendCodeButton: {
-    width: '100%',
-    paddingVertical: scale(14),
-    borderRadius: scale(12),
-    backgroundColor: '#f3f4f6',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: scale(10),
-  },
-  resendCodeButtonText: {
-    fontSize: fontSizes.md,
-    fontWeight: '700',
-    color: '#374151',
-  },
-  emailConfirmedIconWrap: {
-    width: scale(80),
-    height: scale(80),
-    borderRadius: scale(40),
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: scale(20),
-  },
-  emailConfirmedIconOk: {
-    backgroundColor: '#dcfce7',
-  },
-  emailConfirmedIconWarn: {
-    backgroundColor: '#fef9c3',
-  },
-  verifyModalDismiss: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#64748b',
-    textAlign: 'center',
-    paddingVertical: 8,
-  },
+  submitGradient: { paddingVertical: scale(16), flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: scale(8) },
+  submitText: { fontSize: fontSizes.lg, fontWeight: '800', color: '#ffffff', letterSpacing: 0.5 },
+
+  registerRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap' },
+  registerText: { fontSize: fontSizes.sm, color: '#6b7280' },
+  registerLink: { fontSize: fontSizes.sm, color: '#0d9488', fontWeight: '700' },
+
+  backButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: scale(6), marginTop: scale(16) },
+  backText: { fontSize: fontSizes.sm, color: '#94a3b8', fontWeight: '500' },
+
+  // Modals
+  modalOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(15,23,42,0.5)', justifyContent: 'center', alignItems: 'center', padding: scale(24), zIndex: 9999, elevation: 9999 },
+  modalContent: { width: '100%', maxWidth: 400, borderRadius: scale(24), overflow: 'hidden', zIndex: 10000, elevation: 10000 },
+  modalInner: { padding: scale(28), alignItems: 'center', borderRadius: scale(24) },
+  modalIconCircle: { width: scale(72), height: scale(72), borderRadius: scale(36), alignItems: 'center', justifyContent: 'center', marginBottom: scale(18) },
+  modalTitle: { fontSize: fontSizes.xl, fontWeight: '800', color: '#0f172a', marginBottom: scale(10), textAlign: 'center' },
+  modalText: { fontSize: fontSizes.base, color: '#64748b', textAlign: 'center', marginBottom: scale(20), lineHeight: scale(22) },
+  modalSubtext: { fontSize: fontSizes.sm, color: '#64748b', textAlign: 'center', lineHeight: scale(20), marginBottom: scale(8) },
+  modalEmailHighlight: { fontSize: fontSizes.base, fontWeight: '700', color: '#0d9488', textAlign: 'center', marginBottom: scale(16) },
+  modalBtn: { borderRadius: scale(14), overflow: 'hidden', width: '100%', marginBottom: scale(8) },
+  modalBtnGradient: { paddingVertical: scale(14), alignItems: 'center', justifyContent: 'center' },
+  modalBtnText: { fontSize: fontSizes.md, fontWeight: '700', color: '#ffffff' },
+  modalDismiss: { fontSize: fontSizes.md, fontWeight: '600', color: '#94a3b8', textAlign: 'center', paddingVertical: scale(8) },
+
+  // Verify modal
+  verifyBanner: { width: '100%', backgroundColor: '#fffbeb', borderWidth: 1, borderColor: '#fde68a', borderRadius: scale(12), padding: scale(12), marginBottom: scale(12) },
+  verifyBannerText: { fontSize: fontSizes.sm, color: '#92400e', lineHeight: scale(20) },
+  verifyField: { width: '100%', marginBottom: scale(12) },
+  verifyLabel: { fontSize: fontSizes.sm, fontWeight: '600', color: '#374151', marginBottom: scale(8) },
+  verifyInput: { width: '100%', height: scale(52), fontSize: fontSizes.xl, color: '#1f2937', backgroundColor: '#f1f5f9', borderRadius: scale(14), borderWidth: 2, borderColor: '#e2e8f0', paddingHorizontal: scale(16), textAlign: 'center', letterSpacing: 6, fontWeight: '700' },
+  verifyErrorBox: { width: '100%', backgroundColor: '#fef2f2', borderWidth: 1, borderColor: '#fecaca', borderRadius: scale(12), padding: scale(12), marginBottom: scale(12) },
+  verifyErrorText: { fontSize: fontSizes.sm, color: '#b91c1c', textAlign: 'center' },
+  resendBtn: { width: '100%', paddingVertical: scale(14), borderRadius: scale(12), backgroundColor: '#f1f5f9', alignItems: 'center', justifyContent: 'center', marginBottom: scale(10) },
+  resendBtnText: { fontSize: fontSizes.md, fontWeight: '700', color: '#374151' },
 });

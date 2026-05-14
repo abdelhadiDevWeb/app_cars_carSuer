@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   StyleSheet,
   View,
@@ -13,17 +13,32 @@ import { useRouter } from 'expo-router';
 import { LinearGradient } from 'expo-linear-gradient';
 import { StatusBar } from 'expo-status-bar';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import Animated, { FadeInDown, FadeIn } from 'react-native-reanimated';
+import Animated, {
+  FadeInDown,
+  FadeInUp,
+  FadeIn,
+  ZoomIn,
+  useSharedValue,
+  useAnimatedStyle,
+  withSpring,
+  withRepeat,
+  withSequence,
+  withTiming,
+  withDelay,
+  Easing,
+  interpolate,
+} from 'react-native-reanimated';
 import { ThemedText } from '@/components/themed-text';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { apiRequest } from '@/utils/backend';
-import { SCREEN_WIDTH, getPadding, getFontSizes, scale } from '@/utils/responsive';
+import { SCREEN_WIDTH, SCREEN_HEIGHT, getPadding, getFontSizes, scale } from '@/utils/responsive';
 import { useTranslation } from 'react-i18next';
 
 const padding = getPadding();
 const fontSizes = getFontSizes();
 
-/** Digits only, must start with 0, max 10 characters (e.g. 0XXXXXXXXX). */
+const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpacity);
+
 function sanitizeRegisterPhoneInput(text: string): string {
   const digits = text.replace(/\D/g, '');
   if (digits.length === 0) return '';
@@ -32,6 +47,94 @@ function sanitizeRegisterPhoneInput(text: string): string {
 }
 
 const REGISTER_PHONE_PATTERN = /^0\d{7,9}$/;
+
+function AnimatedBlob({ delay, startX, startY, size, colors }: {
+  delay: number; startX: number; startY: number; size: number; colors: string[];
+}) {
+  const translateY = useSharedValue(0);
+  const translateX = useSharedValue(0);
+  const scaleVal = useSharedValue(1);
+
+  useEffect(() => {
+    translateY.value = withDelay(delay,
+      withRepeat(withSequence(
+        withTiming(-18, { duration: 3200, easing: Easing.inOut(Easing.ease) }),
+        withTiming(18, { duration: 3200, easing: Easing.inOut(Easing.ease) }),
+      ), -1, true)
+    );
+    translateX.value = withDelay(delay + 400,
+      withRepeat(withSequence(
+        withTiming(12, { duration: 3800, easing: Easing.inOut(Easing.ease) }),
+        withTiming(-12, { duration: 3800, easing: Easing.inOut(Easing.ease) }),
+      ), -1, true)
+    );
+    scaleVal.value = withDelay(delay + 200,
+      withRepeat(withSequence(
+        withTiming(1.12, { duration: 3500, easing: Easing.inOut(Easing.ease) }),
+        withTiming(0.92, { duration: 3500, easing: Easing.inOut(Easing.ease) }),
+      ), -1, true)
+    );
+  }, []);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: translateY.value }, { translateX: translateX.value }, { scale: scaleVal.value }],
+  }));
+
+  return (
+    <Animated.View style={[{ position: 'absolute', top: startY, left: startX, width: size, height: size, borderRadius: size / 2 }, animatedStyle]}>
+      <LinearGradient colors={colors as [string, string, ...string[]]} style={{ width: size, height: size, borderRadius: size / 2 }} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} />
+    </Animated.View>
+  );
+}
+
+function FocusableInput({
+  icon, placeholder, value, onChangeText, secureTextEntry, keyboardType, autoCapitalize, maxLength,
+  showToggle, onToggle, toggleActive,
+}: {
+  icon: string; placeholder: string; value: string; onChangeText: (t: string) => void;
+  secureTextEntry?: boolean; keyboardType?: any; autoCapitalize?: any; maxLength?: number;
+  showToggle?: boolean; onToggle?: () => void; toggleActive?: boolean;
+}) {
+  const [focused, setFocused] = useState(false);
+  const borderProgress = useSharedValue(0);
+
+  useEffect(() => {
+    borderProgress.value = withSpring(focused ? 1 : 0, { damping: 15, stiffness: 150 });
+  }, [focused]);
+
+  const wrapperAnimStyle = useAnimatedStyle(() => ({
+    borderColor: focused ? 'rgba(13,148,136,0.5)' : '#e2e8f0',
+    shadowOpacity: interpolate(borderProgress.value, [0, 1], [0, 0.12]),
+    shadowRadius: interpolate(borderProgress.value, [0, 1], [0, 12]),
+    transform: [{ scale: interpolate(borderProgress.value, [0, 1], [1, 1.01]) }],
+  }));
+
+  return (
+    <Animated.View style={[styles.inputWrapper, wrapperAnimStyle]}>
+      <View style={[styles.inputIconBox, focused && styles.inputIconBoxFocused]}>
+        <IconSymbol name={icon as any} size={16} color={focused ? '#0d9488' : '#94a3b8'} />
+      </View>
+      <TextInput
+        style={styles.input}
+        placeholder={placeholder}
+        placeholderTextColor="#64748b"
+        value={value}
+        onChangeText={onChangeText}
+        secureTextEntry={secureTextEntry}
+        keyboardType={keyboardType}
+        autoCapitalize={autoCapitalize}
+        maxLength={maxLength}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+      />
+      {showToggle && (
+        <TouchableOpacity onPress={onToggle} style={styles.eyeButton}>
+          <IconSymbol name={toggleActive ? 'eye.fill' as any : 'eye.slash.fill' as any} size={18} color={toggleActive ? '#0d9488' : '#94a3b8'} />
+        </TouchableOpacity>
+      )}
+    </Animated.View>
+  );
+}
 
 type RegisterType = 'client';
 
@@ -44,50 +147,37 @@ export default function RegisterPage() {
   const [verificationCode, setVerificationCode] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isVerifying, setIsVerifying] = useState(false);
-  const [timeLeft, setTimeLeft] = useState(15 * 60); // 15 minutes
+  const [timeLeft, setTimeLeft] = useState(15 * 60);
   const [codeError, setCodeError] = useState('');
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [formError, setFormError] = useState('');
   const [formErrors, setFormErrors] = useState<string[]>([]);
-
-  const [userData, setUserData] = useState({
-    firstName: '',
-    lastName: '',
-    email: '',
-    phone: '',
-    password: '',
-    confirmPassword: '',
-  });
-
+  const [userData, setUserData] = useState({ firstName: '', lastName: '', email: '', phone: '', password: '', confirmPassword: '' });
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
-  // Use refs to prevent animation re-triggering on re-renders
-  const hasAnimatedForm = useRef(false);
-  const hasAnimatedVerification = useRef(false);
+  const buttonScale = useSharedValue(1);
+  const logoPulse = useSharedValue(1);
 
-  // Reset verification animation flag when showVerification changes
   useEffect(() => {
-    if (showVerification) {
-      hasAnimatedVerification.current = false;
-    }
-  }, [showVerification]);
+    logoPulse.value = withRepeat(
+      withSequence(
+        withTiming(1.06, { duration: 2000, easing: Easing.inOut(Easing.ease) }),
+        withTiming(1, { duration: 2000, easing: Easing.inOut(Easing.ease) }),
+      ), -1, true
+    );
+  }, []);
 
-  // Timer countdown effect - Fixed: removed timeLeft from dependencies to prevent infinite loop
+  const logoAnimStyle = useAnimatedStyle(() => ({ transform: [{ scale: logoPulse.value }] }));
+  const buttonAnimStyle = useAnimatedStyle(() => ({ transform: [{ scale: buttonScale.value }] }));
+  const onBtnPressIn = useCallback(() => { buttonScale.value = withSpring(0.96, { damping: 15, stiffness: 300 }); }, []);
+  const onBtnPressOut = useCallback(() => { buttonScale.value = withSpring(1, { damping: 15, stiffness: 300 }); }, []);
+
   useEffect(() => {
     if (!showVerification) return;
-
-    const timer = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 1) {
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-
+    const timer = setInterval(() => { setTimeLeft((prev) => (prev <= 1 ? 0 : prev - 1)); }, 1000);
     return () => clearInterval(timer);
-  }, [showVerification]); // Only depend on showVerification, not timeLeft
+  }, [showVerification]);
 
   const handleUserChange = (field: string, value: string) => {
     const nextValue = field === 'phone' ? sanitizeRegisterPhoneInput(value) : value;
@@ -97,954 +187,385 @@ export default function RegisterPage() {
   };
 
   const handleSubmit = async () => {
-    setIsSubmitting(true);
-    setFormError('');
-    setFormErrors([]);
-
-    if (registerAs === 'client') {
-      if (userData.password !== userData.confirmPassword) {
-        setFormError(t('register.passwordsNoMatch'));
-        setIsSubmitting(false);
-        return;
-      }
-      const phoneTrimmed = userData.phone.trim();
-      if (!REGISTER_PHONE_PATTERN.test(phoneTrimmed)) {
-        setFormError(t('register.phoneInvalid'));
-        setIsSubmitting(false);
-        return;
-      }
-      try {
-        const response = await apiRequest('/auth/register/user', {
-          method: 'POST',
-          body: JSON.stringify({
-            firstName: userData.firstName,
-            lastName: userData.lastName,
-            email: userData.email.trim(),
-            phone: userData.phone.trim(),
-            password: userData.password,
-          }),
-        });
-
-        let data;
-        try {
-          data = await response.json();
-        } catch (jsonError) {
-          // If response is not JSON, it's likely a network/server error
-          console.error('Failed to parse JSON response:', jsonError);
-          setFormError(t('login.serverError'));
-          setIsSubmitting(false);
-          return;
-        }
-
-        if (!response.ok) {
-          setFormErrors([]);
-          setFormError(t('register.registerError'));
-          setIsSubmitting(false);
-          return;
-        }
-
-        setVerificationEmail(userData.email);
-        setUserData({
-          firstName: '',
-          lastName: '',
-          email: '',
-          phone: '',
-          password: '',
-          confirmPassword: '',
-        });
-        setTimeLeft(15 * 60);
-        setVerificationCode('');
-        setCodeError('');
-        setIsSubmitting(false);
-        setShowVerification(true);
-      } catch (error: unknown) {
-        console.error('Register User Error:', error);
-        setFormError(t('register.cannotConnect'));
-        setIsSubmitting(false);
-      }
-    }
-
+    setIsSubmitting(true); setFormError(''); setFormErrors([]);
+    if (userData.password !== userData.confirmPassword) { setFormError(t('register.passwordsNoMatch')); setIsSubmitting(false); return; }
+    const phoneTrimmed = userData.phone.trim();
+    if (!REGISTER_PHONE_PATTERN.test(phoneTrimmed)) { setFormError(t('register.phoneInvalid')); setIsSubmitting(false); return; }
+    try {
+      const response = await apiRequest('/auth/register/user', {
+        method: 'POST',
+        body: JSON.stringify({ firstName: userData.firstName, lastName: userData.lastName, email: userData.email.trim(), phone: userData.phone.trim(), password: userData.password }),
+      });
+      let data;
+      try { data = await response.json(); } catch { setFormError(t('login.serverError')); setIsSubmitting(false); return; }
+      if (!response.ok) { setFormError(t('register.registerError')); setIsSubmitting(false); return; }
+      setVerificationEmail(userData.email);
+      setUserData({ firstName: '', lastName: '', email: '', phone: '', password: '', confirmPassword: '' });
+      setTimeLeft(15 * 60); setVerificationCode(''); setCodeError(''); setIsSubmitting(false); setShowVerification(true);
+    } catch { setFormError(t('register.cannotConnect')); setIsSubmitting(false); }
   };
 
   const handleVerifyEmail = async () => {
     const normalizedCode = verificationCode.replace(/\D/g, '');
-
-    if (normalizedCode.length !== 6) {
-      setCodeError(t('register.codeMustBe6'));
-      return;
-    }
-
-    if (timeLeft <= 0) {
-      setCodeError(t('register.codeExpired'));
-      return;
-    }
-
-    setIsVerifying(true);
-    setCodeError('');
-
+    if (normalizedCode.length !== 6) { setCodeError(t('register.codeMustBe6')); return; }
+    if (timeLeft <= 0) { setCodeError(t('register.codeExpired')); return; }
+    setIsVerifying(true); setCodeError('');
     try {
-      const backendType = 'user';
       const response = await apiRequest('/auth/verify-email', {
         method: 'POST',
-        body: JSON.stringify({
-          email: verificationEmail.trim(),
-          code: normalizedCode,
-          type: backendType,
-        }),
+        body: JSON.stringify({ email: verificationEmail.trim(), code: normalizedCode, type: 'user' }),
       });
-
       let data;
-      try {
-        data = await response.json();
-      } catch (jsonError) {
-        console.error('Failed to parse JSON response:', jsonError);
-        setCodeError(t('login.serverError'));
-        setIsVerifying(false);
-        return;
-      }
-
-      if (!response.ok) {
-        setCodeError(t('register.invalidOrExpired'));
-        setIsVerifying(false);
-        return;
-      }
-
-      if (data.ok === true) {
-        setVerificationCode('');
-        setShowVerification(false);
-        setShowSuccessModal(true);
-        setIsVerifying(false);
-      } else {
-        setCodeError(t('register.verifyError'));
-        setIsVerifying(false);
-      }
-    } catch (error: unknown) {
-      console.error('Verify Email Error:', error);
-      setCodeError(t('register.cannotConnect'));
+      try { data = await response.json(); } catch { setCodeError(t('login.serverError')); setIsVerifying(false); return; }
+      if (!response.ok) { setCodeError(t('register.invalidOrExpired')); setIsVerifying(false); return; }
+      if (data.ok === true) { setVerificationCode(''); setShowVerification(false); setShowSuccessModal(true); }
+      else { setCodeError(t('register.verifyError')); }
       setIsVerifying(false);
-    }
+    } catch { setCodeError(t('register.cannotConnect')); setIsVerifying(false); }
   };
 
-  // Verification Screen
+  // ──── Verification Screen ────
   if (showVerification) {
     return (
-      <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+      <View style={styles.container}>
         <StatusBar style="dark" />
-        <KeyboardAvoidingView
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          style={styles.keyboardView}
-        >
-          <ScrollView
-            contentContainerStyle={styles.scrollContent}
-            showsVerticalScrollIndicator={false}
-          >
-            <View style={styles.verificationContent}>
-              <Animated.View
-                key="verification-header"
-                entering={!hasAnimatedVerification.current ? FadeInDown.duration(600).springify() : undefined}
-                style={styles.verificationHeader}
-                onLayout={() => {
-                  hasAnimatedVerification.current = true;
-                }}
-              >
-                <View style={styles.verificationIconContainer}>
-                  <IconSymbol name="message.fill" size={32} color="#10b981" />
-                </View>
-                <ThemedText style={styles.verificationTitle}>
-                  {t('register.verifyCheckEmail')}
-                </ThemedText>
-                <ThemedText style={styles.verificationSubtitle}>
-                  {t('register.verifySentTo')}
-                </ThemedText>
-                <ThemedText style={styles.verificationEmail}>
-                  {verificationEmail}
-                </ThemedText>
-                <View
-                  style={[
-                    styles.timerBadge,
-                    timeLeft > 0 ? styles.timerBadgeActive : styles.timerBadgeExpired,
-                  ]}
-                >
-                  <IconSymbol name="checkmark.circle.fill" size={16} color={timeLeft > 0 ? '#3b82f6' : '#ef4444'} />
-                  <ThemedText style={styles.timerText}>
-                    {timeLeft > 0
-                      ? t('register.codeValidFor', {
-                          time: `${Math.floor(timeLeft / 60)}:${(timeLeft % 60).toString().padStart(2, '0')}`,
-                        })
-                      : t('register.codeExpiredShort')}
-                  </ThemedText>
-                </View>
-              </Animated.View>
+        <LinearGradient colors={['#f8fafc', '#f1f5f9', '#ffffff']} style={StyleSheet.absoluteFillObject} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} />
+        <AnimatedBlob delay={0} startX={-60} startY={-40} size={220} colors={['rgba(16,185,129,0.08)', 'rgba(52,211,153,0.04)']} />
+        <AnimatedBlob delay={600} startX={SCREEN_WIDTH - 100} startY={SCREEN_HEIGHT * 0.5} size={260} colors={['rgba(13,148,136,0.07)', 'rgba(20,184,166,0.03)']} />
 
-              <Animated.View
-                key="verification-form"
-                entering={!hasAnimatedVerification.current ? FadeIn.duration(800).delay(200).springify() : undefined}
-                style={styles.verificationForm}
-              >
-                <LinearGradient
-                  colors={['rgba(255, 255, 255, 0.98)', 'rgba(255, 255, 255, 0.95)']}
-                  style={styles.formBlur}
-                >
-                  <View style={styles.codeInputContainer}>
-                    <ThemedText style={styles.codeLabel}>
-                      {t('register.verifyCodeLabel')}
+        <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
+          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.keyboardView}>
+            <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+              <View style={styles.content}>
+                {/* Header */}
+                <Animated.View entering={ZoomIn.duration(600).springify()} style={styles.verifyIconWrap}>
+                  <LinearGradient colors={['#10b981', '#34d399']} style={styles.verifyIconGradient}>
+                    <IconSymbol name="envelope.fill" size={scale(30)} color="#ffffff" />
+                  </LinearGradient>
+                </Animated.View>
+
+                <Animated.View entering={FadeInDown.duration(500).delay(100).springify()}>
+                  <ThemedText style={styles.verifyTitle}>{t('register.verifyCheckEmail')}</ThemedText>
+                  <ThemedText style={styles.verifySubtitle}>{t('register.verifySentTo')}</ThemedText>
+                  <ThemedText style={styles.verifyEmailText}>{verificationEmail}</ThemedText>
+                </Animated.View>
+
+                {/* Timer */}
+                <Animated.View entering={FadeIn.duration(500).delay(200)}>
+                  <View style={[styles.timerBadge, timeLeft > 0 ? styles.timerActive : styles.timerExpired]}>
+                    <IconSymbol name="clock.fill" size={16} color={timeLeft > 0 ? '#38bdf8' : '#f87171'} />
+                    <ThemedText style={[styles.timerText, timeLeft <= 0 && { color: '#dc2626' }]}>
+                      {timeLeft > 0
+                        ? t('register.codeValidFor', { time: `${Math.floor(timeLeft / 60)}:${(timeLeft % 60).toString().padStart(2, '0')}` })
+                        : t('register.codeExpiredShort')}
                     </ThemedText>
+                  </View>
+                </Animated.View>
+
+                {/* Code Input Card */}
+                <Animated.View entering={FadeInUp.duration(600).delay(300).springify()} style={styles.formCard}>
+                  <View style={styles.formCardInner}>
+                    <ThemedText style={styles.label}>{t('register.verifyCodeLabel')}</ThemedText>
                     <TextInput
-                      style={[
-                        styles.codeInput,
-                        codeError ? styles.codeInputError : null,
-                      ]}
+                      style={[styles.codeInput, codeError ? styles.codeInputError : null]}
                       value={verificationCode}
-                      onChangeText={(text) => {
-                        const value = text.replace(/\D/g, '');
-                        setVerificationCode(value);
-                        setCodeError('');
-                      }}
+                      onChangeText={(text) => { setVerificationCode(text.replace(/\D/g, '')); setCodeError(''); }}
                       placeholder={t('register.verifyCodePlaceholder')}
-                      placeholderTextColor="#9ca3af"
+                      placeholderTextColor="#475569"
                       maxLength={6}
                       keyboardType="number-pad"
                       editable={timeLeft > 0}
                     />
+
                     {codeError ? (
-                      <View style={styles.codeErrorContainer}>
-                        <ThemedText style={styles.codeErrorText}>
-                          {codeError}
-                        </ThemedText>
-                      </View>
+                      <Animated.View entering={FadeIn.duration(300)} style={styles.codeErrorBox}>
+                        <ThemedText style={styles.codeErrorText}>{codeError}</ThemedText>
+                      </Animated.View>
                     ) : null}
-                  </View>
 
-                  <TouchableOpacity
-                    onPress={handleVerifyEmail}
-                    disabled={isVerifying || verificationCode.length !== 6 || timeLeft <= 0}
-                    style={styles.verifyButton}
-                    activeOpacity={0.8}
-                  >
-                    <LinearGradient
-                      colors={['#0d9488', '#14b8a6']}
-                      style={styles.verifyButtonGradient}
+                    <AnimatedTouchableOpacity
+                      onPress={handleVerifyEmail}
+                      onPressIn={onBtnPressIn}
+                      onPressOut={onBtnPressOut}
+                      disabled={isVerifying || verificationCode.length !== 6 || timeLeft <= 0}
+                      activeOpacity={0.9}
+                      style={[styles.primaryBtn, buttonAnimStyle, (isVerifying || verificationCode.length !== 6 || timeLeft <= 0) && { opacity: 0.5 }]}
                     >
-                      {isVerifying ? (
-                        <ActivityIndicator color="#ffffff" />
-                      ) : (
-                        <ThemedText style={styles.verifyButtonText}>
-                          {timeLeft <= 0 ? t('register.codeExpiredShort') : t('register.verify')}
-                        </ThemedText>
-                      )}
-                    </LinearGradient>
-                  </TouchableOpacity>
+                      <LinearGradient colors={['#0d9488', '#14b8a6', '#2dd4bf']} style={styles.primaryBtnGradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
+                        {isVerifying ? <ActivityIndicator color="#ffffff" /> : (
+                          <ThemedText style={styles.primaryBtnText}>{timeLeft <= 0 ? t('register.codeExpiredShort') : t('register.verify')}</ThemedText>
+                        )}
+                      </LinearGradient>
+                    </AnimatedTouchableOpacity>
 
-                  {timeLeft <= 0 && (
-                    <TouchableOpacity
-                      onPress={() => {
-                        setShowVerification(false);
-                        setVerificationCode('');
-                        setTimeLeft(15 * 60);
-                        setCodeError('');
-                      }}
-                      style={styles.backToRegisterButton}
-                    >
-                      <ThemedText style={styles.backToRegisterText}>
-                        {t('register.backToRegister')}
-                      </ThemedText>
+                    {timeLeft <= 0 && (
+                      <TouchableOpacity onPress={() => { setShowVerification(false); setVerificationCode(''); setTimeLeft(15 * 60); setCodeError(''); }} style={styles.expiredBackBtn}>
+                        <ThemedText style={styles.expiredBackText}>{t('register.backToRegister')}</ThemedText>
+                      </TouchableOpacity>
+                    )}
+
+                    <TouchableOpacity onPress={() => { setShowVerification(false); setVerificationCode(''); setCodeError(''); }} style={styles.ghostBtn}>
+                      <ThemedText style={styles.ghostBtnText}>{t('register.backToForm')}</ThemedText>
                     </TouchableOpacity>
-                  )}
+                  </View>
+                </Animated.View>
+              </View>
+            </ScrollView>
+          </KeyboardAvoidingView>
+        </SafeAreaView>
+      </View>
+    );
+  }
 
-                  <TouchableOpacity
-                    onPress={() => {
-                      setShowVerification(false);
-                      setVerificationCode('');
-                      setCodeError('');
-                    }}
-                    style={styles.backButton}
-                  >
-                    <ThemedText style={styles.backButtonText}>
-                      {t('register.backToForm')}
-                    </ThemedText>
-                  </TouchableOpacity>
-                </LinearGradient>
+  // ──── Main Registration ────
+  return (
+    <View style={styles.container}>
+      <StatusBar style="dark" />
+      <LinearGradient colors={['#f8fafc', '#f1f5f9', '#ffffff']} style={StyleSheet.absoluteFillObject} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} />
+      <AnimatedBlob delay={0} startX={-70} startY={-50} size={240} colors={['rgba(13,148,136,0.1)', 'rgba(20,184,166,0.05)']} />
+      <AnimatedBlob delay={700} startX={SCREEN_WIDTH - 110} startY={SCREEN_HEIGHT * 0.12} size={180} colors={['rgba(56,189,248,0.08)', 'rgba(14,165,233,0.04)']} />
+      <AnimatedBlob delay={1300} startX={SCREEN_WIDTH * 0.25} startY={SCREEN_HEIGHT * 0.7} size={300} colors={['rgba(13,148,136,0.06)', 'rgba(45,212,191,0.03)']} />
+
+      <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.keyboardView}>
+          <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+            <View style={styles.content}>
+              {/* Logo */}
+              <Animated.View entering={ZoomIn.duration(700).springify()} style={styles.logoSection}>
+                <Animated.View style={[styles.logoOuter, logoAnimStyle]}>
+                  <LinearGradient colors={['#0d9488', '#14b8a6', '#2dd4bf']} style={styles.logoGradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}>
+                    <IconSymbol name="person.badge.plus" size={scale(34)} color="#ffffff" />
+                  </LinearGradient>
+                </Animated.View>
+              </Animated.View>
+
+              {/* Title */}
+              <Animated.View entering={FadeInDown.duration(600).delay(150).springify()}>
+                <ThemedText style={styles.title}>{t('auth.register')}</ThemedText>
+                <ThemedText style={styles.subtitle}>{t('register.alreadyHaveAccount').replace(/\s*$/, '') || 'Create your CarSure account'}</ThemedText>
+              </Animated.View>
+
+              {/* Form Card */}
+              <Animated.View entering={FadeInUp.duration(700).delay(300).springify()} style={styles.formCard}>
+                <View style={styles.formCardInner}>
+                  {/* Error */}
+                  {formError ? (
+                    <Animated.View entering={FadeIn.duration(300)} style={styles.errorContainer}>
+                      <IconSymbol name="exclamationmark.triangle.fill" size={16} color="#ef4444" />
+                      <View style={{ flex: 1 }}>
+                        <ThemedText style={styles.errorText}>{formError}</ThemedText>
+                        {formErrors.length > 0 && formErrors.map((e, i) => (
+                          <ThemedText key={i} style={styles.errorListItem}>• {e}</ThemedText>
+                        ))}
+                      </View>
+                    </Animated.View>
+                  ) : null}
+
+                  {/* Name Row */}
+                  <Animated.View entering={FadeInDown.duration(500).delay(350)} style={styles.nameRow}>
+                    <View style={styles.halfField}>
+                      <ThemedText style={styles.label}>{t('register.firstName')}</ThemedText>
+                      <FocusableInput icon="person.fill" placeholder={t('register.firstName')} value={userData.firstName} onChangeText={(t) => handleUserChange('firstName', t)} />
+                    </View>
+                    <View style={styles.halfField}>
+                      <ThemedText style={styles.label}>{t('register.lastName')}</ThemedText>
+                      <FocusableInput icon="person.fill" placeholder={t('register.lastName')} value={userData.lastName} onChangeText={(t) => handleUserChange('lastName', t)} />
+                    </View>
+                  </Animated.View>
+
+                  {/* Email */}
+                  <Animated.View entering={FadeInDown.duration(500).delay(420)} style={styles.fieldGroup}>
+                    <ThemedText style={styles.label}>{t('register.emailRequired')}</ThemedText>
+                    <FocusableInput icon="envelope.fill" placeholder={t('register.emailPlaceholder')} value={userData.email} onChangeText={(t) => handleUserChange('email', t)} keyboardType="email-address" autoCapitalize="none" />
+                  </Animated.View>
+
+                  {/* Phone */}
+                  <Animated.View entering={FadeInDown.duration(500).delay(490)} style={styles.fieldGroup}>
+                    <ThemedText style={styles.label}>{t('register.phone')}</ThemedText>
+                    <FocusableInput icon="phone.fill" placeholder={t('register.phonePlaceholder')} value={userData.phone} onChangeText={(t) => handleUserChange('phone', sanitizeRegisterPhoneInput(t))} keyboardType="number-pad" maxLength={10} />
+                  </Animated.View>
+
+                  {/* Password */}
+                  <Animated.View entering={FadeInDown.duration(500).delay(560)} style={styles.fieldGroup}>
+                    <ThemedText style={styles.label}>{t('register.passwordLabel')}</ThemedText>
+                    <FocusableInput icon="lock.fill" placeholder="••••••••" value={userData.password} onChangeText={(t) => handleUserChange('password', t)} secureTextEntry={!showPassword} autoCapitalize="none" showToggle onToggle={() => setShowPassword(!showPassword)} toggleActive={showPassword} />
+                  </Animated.View>
+
+                  {/* Confirm Password */}
+                  <Animated.View entering={FadeInDown.duration(500).delay(630)} style={styles.fieldGroup}>
+                    <ThemedText style={styles.label}>{t('register.confirmPasswordLabel')}</ThemedText>
+                    <FocusableInput icon="lock.fill" placeholder="••••••••" value={userData.confirmPassword} onChangeText={(t) => handleUserChange('confirmPassword', t)} secureTextEntry={!showConfirmPassword} autoCapitalize="none" showToggle onToggle={() => setShowConfirmPassword(!showConfirmPassword)} toggleActive={showConfirmPassword} />
+                  </Animated.View>
+
+                  {/* Submit */}
+                  <Animated.View entering={FadeInDown.duration(600).delay(700)}>
+                    <AnimatedTouchableOpacity
+                      onPress={handleSubmit}
+                      onPressIn={onBtnPressIn}
+                      onPressOut={onBtnPressOut}
+                      disabled={isSubmitting}
+                      activeOpacity={0.9}
+                      style={[styles.primaryBtn, buttonAnimStyle, isSubmitting && { opacity: 0.5 }]}
+                    >
+                      <LinearGradient colors={['#0d9488', '#14b8a6', '#2dd4bf']} style={styles.primaryBtnGradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }}>
+                        {isSubmitting ? <ActivityIndicator color="#ffffff" /> : (
+                          <>
+                            <ThemedText style={styles.primaryBtnText}>{t('register.createAccount')}</ThemedText>
+                            <IconSymbol name="arrow.right" size={18} color="#ffffff" />
+                          </>
+                        )}
+                      </LinearGradient>
+                    </AnimatedTouchableOpacity>
+                  </Animated.View>
+
+                  {/* Login Link */}
+                  <Animated.View entering={FadeIn.duration(500).delay(800)} style={styles.linkRow}>
+                    <ThemedText style={styles.linkText}>{t('register.alreadyHaveAccount')} </ThemedText>
+                    <TouchableOpacity onPress={() => router.push('/login')}>
+                      <ThemedText style={styles.linkHighlight}>{t('register.signIn')}</ThemedText>
+                    </TouchableOpacity>
+                  </Animated.View>
+                </View>
+              </Animated.View>
+
+              {/* Back */}
+              <Animated.View entering={FadeIn.duration(500).delay(900)}>
+                <TouchableOpacity onPress={() => router.replace('/(tabs)')} style={styles.backButton}>
+                  <IconSymbol name="chevron.left" size={14} color="#94a3b8" />
+                  <ThemedText style={styles.backText}>{t('register.back')}</ThemedText>
+                </TouchableOpacity>
               </Animated.View>
             </View>
           </ScrollView>
         </KeyboardAvoidingView>
       </SafeAreaView>
-    );
-  }
-
-  // Main Registration Screen
-  return (
-    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      <StatusBar style="dark" />
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={styles.keyboardView}
-      >
-        <ScrollView
-          contentContainerStyle={styles.scrollContent}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-        >
-          {/* Background decoration */}
-          <View style={styles.backgroundDecoration}>
-            <View style={styles.gradientCircle1} />
-            <View style={styles.gradientCircle2} />
-          </View>
-
-          <View style={styles.content}>
-            {/* Client Registration Form */}
-            <Animated.View
-              key="form-client"
-              entering={!hasAnimatedForm.current ? FadeIn.duration(800).delay(200).springify() : undefined}
-              style={styles.formContainer}
-              onLayout={() => {
-                hasAnimatedForm.current = true;
-              }}
-            >
-                <LinearGradient
-                  colors={['rgba(255, 255, 255, 0.98)', 'rgba(255, 255, 255, 0.95)']}
-                  style={styles.formBlur}
-                >
-                  {formError ? (
-                    <View style={styles.errorContainer}>
-                      <IconSymbol name="checkmark.circle.fill" size={16} color="#ef4444" />
-                      <View style={styles.errorContent}>
-                        <ThemedText style={styles.errorText}>{formError}</ThemedText>
-                        {formErrors.length > 0 && (
-                          <View style={styles.errorList}>
-                            {formErrors.map((error, index) => (
-                              <ThemedText key={index} style={styles.errorListItem}>
-                                • {error}
-                              </ThemedText>
-                            ))}
-                          </View>
-                        )}
-                      </View>
-                    </View>
-                  ) : null}
-
-                  <View style={styles.form}>
-                      <View style={styles.row}>
-                        <View style={[styles.inputContainer, styles.halfInput]}>
-                          <ThemedText style={styles.label}>{t('register.firstName')}</ThemedText>
-                          <TextInput
-                            style={styles.input}
-                            placeholder={t('register.firstName')}
-                            placeholderTextColor="#9ca3af"
-                            value={userData.firstName}
-                            onChangeText={(text) => handleUserChange('firstName', text)}
-                          />
-                        </View>
-                        <View style={[styles.inputContainer, styles.halfInput]}>
-                          <ThemedText style={styles.label}>{t('register.lastName')}</ThemedText>
-                          <TextInput
-                            style={styles.input}
-                            placeholder={t('register.lastName')}
-                            placeholderTextColor="#9ca3af"
-                            value={userData.lastName}
-                            onChangeText={(text) => handleUserChange('lastName', text)}
-                          />
-                        </View>
-                      </View>
-
-                      <View style={styles.inputContainer}>
-                        <ThemedText style={styles.label}>{t('register.emailRequired')}</ThemedText>
-                        <TextInput
-                          style={styles.input}
-                          placeholder={t('register.emailPlaceholder')}
-                          placeholderTextColor="#9ca3af"
-                          value={userData.email}
-                          onChangeText={(text) => handleUserChange('email', text)}
-                          keyboardType="email-address"
-                          autoCapitalize="none"
-                        />
-                      </View>
-
-                      <View style={styles.inputContainer}>
-                        <ThemedText style={styles.label}>{t('register.phone')}</ThemedText>
-                        <TextInput
-                          style={styles.input}
-                          placeholder={t('register.phonePlaceholder')}
-                          placeholderTextColor="#9ca3af"
-                          value={userData.phone}
-                          onChangeText={(text) =>
-                            handleUserChange('phone', sanitizeRegisterPhoneInput(text))
-                          }
-                          keyboardType="number-pad"
-                          maxLength={10}
-                        />
-                      </View>
-
-                      <View style={styles.inputContainer}>
-                        <ThemedText style={styles.label}>{t('register.passwordLabel')}</ThemedText>
-                        <View style={styles.passwordWrapper}>
-                          <TextInput
-                            style={styles.passwordInput}
-                            placeholder="••••••••"
-                            placeholderTextColor="#9ca3af"
-                            value={userData.password}
-                            onChangeText={(text) => handleUserChange('password', text)}
-                            secureTextEntry={!showPassword}
-                            autoCapitalize="none"
-                          />
-                          <TouchableOpacity
-                            onPress={() => setShowPassword(!showPassword)}
-                            style={styles.eyeButton}
-                          >
-                            <IconSymbol
-                              name={showPassword ? 'checkmark.circle.fill' : 'shield.fill'}
-                              size={20}
-                              color="#6b7280"
-                            />
-                          </TouchableOpacity>
-                        </View>
-                      </View>
-
-                      <View style={styles.inputContainer}>
-                        <ThemedText style={styles.label}>{t('register.confirmPasswordLabel')}</ThemedText>
-                        <View style={styles.passwordWrapper}>
-                          <TextInput
-                            style={styles.passwordInput}
-                            placeholder="••••••••"
-                            placeholderTextColor="#9ca3af"
-                            value={userData.confirmPassword}
-                            onChangeText={(text) => handleUserChange('confirmPassword', text)}
-                            secureTextEntry={!showConfirmPassword}
-                            autoCapitalize="none"
-                          />
-                          <TouchableOpacity
-                            onPress={() => setShowConfirmPassword(!showConfirmPassword)}
-                            style={styles.eyeButton}
-                          >
-                            <IconSymbol
-                              name={showConfirmPassword ? 'checkmark.circle.fill' : 'shield.fill'}
-                              size={20}
-                              color="#6b7280"
-                            />
-                          </TouchableOpacity>
-                        </View>
-                      </View>
-                  </View>
-
-                  <TouchableOpacity
-                    onPress={handleSubmit}
-                    disabled={isSubmitting}
-                    style={[styles.submitButton, isSubmitting && styles.submitButtonDisabled]}
-                    activeOpacity={0.8}
-                  >
-                    <LinearGradient
-                      colors={['#0d9488', '#14b8a6']}
-                      style={styles.submitButtonGradient}
-                    >
-                      {isSubmitting ? (
-                        <ActivityIndicator color="#ffffff" />
-                      ) : (
-                        <ThemedText style={styles.submitButtonText}>
-                          {t('register.createAccount')}
-                        </ThemedText>
-                      )}
-                    </LinearGradient>
-                  </TouchableOpacity>
-
-                  <View style={styles.loginLink}>
-                    <ThemedText style={styles.loginText}>
-                      {t('register.alreadyHaveAccount')}{' '}
-                    </ThemedText>
-                    <TouchableOpacity onPress={() => router.push('/login')}>
-                      <ThemedText style={styles.loginLinkText}>{t('register.signIn')}</ThemedText>
-                    </TouchableOpacity>
-                  </View>
-                </LinearGradient>
-              </Animated.View>
-
-            {/* Back Button */}
-            <TouchableOpacity
-              onPress={() => router.replace('/(tabs)')}
-              style={styles.backButton}
-            >
-              <IconSymbol name="chevron.left" size={16} color="#6b7280" />
-              <ThemedText style={styles.backButtonText}>{t('register.back')}</ThemedText>
-            </TouchableOpacity>
-          </View>
-        </ScrollView>
-      </KeyboardAvoidingView>
 
       {/* Success Modal */}
       {showSuccessModal && (
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <LinearGradient
-              colors={['rgba(255, 255, 255, 0.98)', 'rgba(255, 255, 255, 0.95)']}
-              style={styles.modalBlur}
-            >
-              <View style={styles.modalIconContainer}>
-                <IconSymbol name="checkmark.circle.fill" size={48} color="#10b981" />
+          <Animated.View entering={ZoomIn.duration(400).springify()} style={styles.modalContent}>
+            <LinearGradient colors={['#ffffff', '#f0fdf4']} style={styles.modalInner}>
+              <View style={styles.successIconCircle}>
+                <LinearGradient colors={['#10b981', '#34d399']} style={styles.successIconGradient}>
+                  <IconSymbol name="checkmark" size={scale(32)} color="#ffffff" />
+                </LinearGradient>
               </View>
-              <ThemedText style={styles.modalTitle}>
-                {t('register.successTitle')}
-              </ThemedText>
-              <ThemedText style={styles.modalText}>
-                {t('register.successVerifiedBody')}
-              </ThemedText>
-              <TouchableOpacity
-                onPress={() => {
-                  setShowSuccessModal(false);
-                  router.push('/login');
-                }}
-                style={styles.modalButton}
-              >
-                <LinearGradient
-                  colors={['#0d9488', '#14b8a6']}
-                  style={styles.modalButtonGradient}
-                >
-                  <ThemedText style={styles.modalButtonText}>
-                    {t('register.goToLogin')}
-                  </ThemedText>
+              <ThemedText style={styles.modalTitle}>{t('register.successTitle')}</ThemedText>
+              <ThemedText style={styles.modalText}>{t('register.successVerifiedBody')}</ThemedText>
+              <TouchableOpacity onPress={() => { setShowSuccessModal(false); router.push('/login'); }} style={styles.modalBtn}>
+                <LinearGradient colors={['#0d9488', '#14b8a6']} style={styles.modalBtnGradient}>
+                  <ThemedText style={styles.modalBtnText}>{t('register.goToLogin')}</ThemedText>
+                  <IconSymbol name="arrow.right" size={16} color="#ffffff" />
                 </LinearGradient>
               </TouchableOpacity>
             </LinearGradient>
-          </View>
+          </Animated.View>
         </View>
       )}
-    </SafeAreaView>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#fafbfc',
-  },
-  keyboardView: {
-    flex: 1,
-  },
-  scrollContent: {
-    flexGrow: 1,
-    paddingBottom: 40,
-  },
-  backgroundDecoration: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-  },
-  gradientCircle1: {
-    position: 'absolute',
-    top: -100,
-    left: -100,
-    width: 300,
-    height: 300,
-    borderRadius: 150,
-    backgroundColor: 'rgba(14, 165, 233, 0.1)',
-  },
-  gradientCircle2: {
-    position: 'absolute',
-    bottom: -100,
-    right: -100,
-    width: 400,
-    height: 400,
-    borderRadius: 200,
-    backgroundColor: 'rgba(20, 184, 166, 0.1)',
-  },
-  content: {
-    flex: 1,
-    paddingHorizontal: padding.large,
-    paddingTop: padding.large * 2,
-  },
-  header: {
-    alignItems: 'center',
-    marginBottom: padding.large * 1.5,
-  },
-  logoContainer: {
-    width: scale(80),
-    height: scale(80),
-    borderRadius: scale(20),
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 20,
+  container: { flex: 1, backgroundColor: '#f8fafc' },
+  safeArea: { flex: 1 },
+  keyboardView: { flex: 1 },
+  scrollContent: { flexGrow: 1, paddingBottom: scale(40) },
+  content: { flex: 1, paddingHorizontal: scale(24), paddingTop: scale(16) },
+
+  logoSection: { alignItems: 'center', marginBottom: scale(20) },
+  logoOuter: {
     ...Platform.select({
-      ios: {
-        shadowColor: '#0d9488',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.3,
-        shadowRadius: 12,
-      },
-      android: {
-        elevation: 8,
-      },
+      ios: { shadowColor: '#14b8a6', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 20 },
+      android: { elevation: 12 },
     }),
   },
-  title: {
-    fontSize: fontSizes['3xl'],
-    fontWeight: '800',
-    color: '#1f2937',
-    marginBottom: padding.small,
-    textAlign: 'center',
-  },
-  subtitle: {
-    fontSize: fontSizes.md,
-    color: '#6b7280',
-    textAlign: 'center',
-    paddingHorizontal: padding.horizontal,
-  },
-  formContainer: {
-    borderRadius: 24,
-    overflow: 'hidden',
-    marginBottom: 24,
+  logoGradient: { width: scale(76), height: scale(76), borderRadius: scale(22), alignItems: 'center', justifyContent: 'center' },
+
+  title: { fontSize: fontSizes['3xl'], fontWeight: '900', color: '#0f172a', textAlign: 'center', marginBottom: scale(4), letterSpacing: 0.5 },
+  subtitle: { fontSize: fontSizes.md, color: '#64748b', textAlign: 'center', marginBottom: scale(22) },
+
+  formCard: {
+    borderRadius: scale(24), overflow: 'hidden', backgroundColor: '#ffffff', borderWidth: 1, borderColor: 'rgba(0,0,0,0.06)', marginBottom: scale(14),
     ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.1,
-        shadowRadius: 12,
-      },
-      android: {
-        elevation: 8,
-      },
+      ios: { shadowColor: '#94a3b8', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.15, shadowRadius: 24 },
+      android: { elevation: 10 },
     }),
   },
-  formBlur: {
-    borderRadius: 24,
-    borderWidth: 1,
-    borderColor: 'rgba(0, 0, 0, 0.05)',
+  formCardInner: { padding: scale(22) },
+
+  nameRow: { flexDirection: 'row', gap: scale(12), marginBottom: scale(4) },
+  halfField: { flex: 1 },
+  fieldGroup: { marginBottom: scale(16) },
+  label: { fontSize: fontSizes.sm, fontWeight: '700', color: '#374151', marginBottom: scale(8), letterSpacing: 0.3 },
+
+  inputWrapper: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: '#f8fafc', borderRadius: scale(14), borderWidth: 1.5, borderColor: '#e2e8f0',
+    shadowColor: '#0d9488', shadowOffset: { width: 0, height: 0 },
   },
-  form: {
-    padding: padding.large,
-  },
+  inputIconBox: { width: scale(40), height: scale(40), alignItems: 'center', justifyContent: 'center', backgroundColor: '#f0fdfa', borderRadius: scale(10), marginLeft: scale(4) },
+  inputIconBoxFocused: { backgroundColor: '#ccfbf1' },
+  input: { flex: 1, height: scale(46), fontSize: fontSizes.base, color: '#1e293b', paddingHorizontal: scale(10) },
+  eyeButton: { padding: scale(10) },
+
   errorContainer: {
-    flexDirection: 'row',
-    padding: 16,
-    backgroundColor: '#fef2f2',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#fecaca',
-    marginBottom: 20,
-    gap: 12,
+    flexDirection: 'row', alignItems: 'flex-start', gap: scale(8), padding: scale(12),
+    backgroundColor: '#fef2f2', borderRadius: scale(12), borderWidth: 1, borderColor: '#fecaca', marginBottom: scale(16),
   },
-  errorContent: {
-    flex: 1,
-  },
-  errorText: {
-    fontSize: 14,
-    color: '#ef4444',
-    fontWeight: '600',
-    marginBottom: 4,
-  },
-  errorList: {
-    marginTop: 4,
-  },
-  errorListItem: {
-    fontSize: 13,
-    color: '#dc2626',
-    marginTop: 2,
-  },
-  row: {
-    flexDirection: 'row',
-    gap: 12,
-  },
-  inputContainer: {
-    marginBottom: 20,
-  },
-  halfInput: {
-    flex: 1,
-  },
-  label: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#374151',
-    marginBottom: 8,
-  },
-  input: {
-    height: 48,
-    backgroundColor: '#f9fafb',
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: '#e5e7eb',
-    paddingHorizontal: 16,
-    fontSize: 16,
-    color: '#1f2937',
-  },
-  passwordWrapper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#f9fafb',
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: '#e5e7eb',
-  },
-  passwordInput: {
-    flex: 1,
-    height: 48,
-    paddingHorizontal: 16,
-    fontSize: 16,
-    color: '#1f2937',
-  },
-  eyeButton: {
-    padding: 12,
-  },
-  submitButton: {
-    borderRadius: scale(12),
-    overflow: 'hidden',
-    marginBottom: padding.medium,
-    alignSelf: 'center',
-    minWidth: scale(150),
+  errorText: { fontSize: fontSizes.sm, color: '#dc2626', fontWeight: '500' },
+  errorListItem: { fontSize: fontSizes.xs, color: '#dc2626', marginTop: 2 },
+
+  primaryBtn: {
+    borderRadius: scale(16), overflow: 'hidden', marginTop: scale(4),
     ...Platform.select({
-      ios: {
-        shadowColor: '#0d9488',
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.2,
-        shadowRadius: 4,
-      },
-      android: {
-        elevation: 4,
-      },
+      ios: { shadowColor: '#14b8a6', shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.35, shadowRadius: 14 },
+      android: { elevation: 10 },
     }),
   },
-  submitButtonDisabled: {
-    opacity: 0.5,
-  },
-  submitButtonGradient: {
-    paddingVertical: padding.small,
-    paddingHorizontal: padding.large,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  submitButtonText: {
-    fontSize: fontSizes.sm,
-    fontWeight: '700',
-    color: '#ffffff',
-  },
-  loginLink: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    marginBottom: padding.large,
-  },
-  loginText: {
-    fontSize: 14,
-    color: '#6b7280',
-  },
-  loginLinkText: {
-    fontSize: 14,
-    color: '#0d9488',
-    fontWeight: '600',
-  },
-  backButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    marginTop: 20,
-  },
-  backButtonText: {
-    fontSize: 14,
-    color: '#6b7280',
-    fontWeight: '500',
-  },
-  // Verification styles
-  verificationContent: {
-    flex: 1,
-    justifyContent: 'center',
-    paddingHorizontal: 24,
-    paddingTop: 40,
-  },
-  verificationHeader: {
-    alignItems: 'center',
-    marginBottom: 32,
-  },
-  verificationIconContainer: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    backgroundColor: '#d1fae5',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 20,
-  },
-  verificationTitle: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: '#1f2937',
-    marginBottom: 8,
-    textAlign: 'center',
-  },
-  verificationSubtitle: {
-    fontSize: 14,
-    color: '#6b7280',
-    textAlign: 'center',
-    marginBottom: 4,
-  },
-  verificationEmail: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#0d9488',
-    marginBottom: 16,
-    textAlign: 'center',
-  },
-  timerBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-  },
-  timerBadgeActive: {
-    backgroundColor: '#dbeafe',
-  },
-  timerBadgeExpired: {
-    backgroundColor: '#fee2e2',
-  },
-  timerText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#1f2937',
-  },
-  verificationForm: {
-    borderRadius: 24,
-    overflow: 'hidden',
-    ...Platform.select({
-      ios: {
-        shadowColor: '#000',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.1,
-        shadowRadius: 12,
-      },
-      android: {
-        elevation: 8,
-      },
-    }),
-  },
-  codeInputContainer: {
-    padding: 24,
-  },
-  codeLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#374151',
-    marginBottom: 12,
-    textAlign: 'center',
-  },
+  primaryBtnGradient: { paddingVertical: scale(15), flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: scale(8) },
+  primaryBtnText: { fontSize: fontSizes.md, fontWeight: '800', color: '#ffffff', letterSpacing: 0.5 },
+
+  linkRow: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', flexWrap: 'wrap', marginTop: scale(18) },
+  linkText: { fontSize: fontSizes.sm, color: '#6b7280' },
+  linkHighlight: { fontSize: fontSizes.sm, color: '#0d9488', fontWeight: '700' },
+
+  backButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: scale(6), marginTop: scale(14) },
+  backText: { fontSize: fontSizes.sm, color: '#94a3b8', fontWeight: '500' },
+
+  // Verification
+  verifyIconWrap: { alignItems: 'center', marginBottom: scale(20) },
+  verifyIconGradient: { width: scale(72), height: scale(72), borderRadius: scale(20), alignItems: 'center', justifyContent: 'center' },
+  verifyTitle: { fontSize: fontSizes['2xl'], fontWeight: '900', color: '#0f172a', textAlign: 'center', marginBottom: scale(6) },
+  verifySubtitle: { fontSize: fontSizes.base, color: '#64748b', textAlign: 'center', marginBottom: scale(4) },
+  verifyEmailText: { fontSize: fontSizes.md, fontWeight: '700', color: '#0d9488', textAlign: 'center', marginBottom: scale(18) },
+
+  timerBadge: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: scale(8), paddingHorizontal: scale(18), paddingVertical: scale(10), borderRadius: scale(20), alignSelf: 'center', marginBottom: scale(24) },
+  timerActive: { backgroundColor: '#dbeafe', borderWidth: 1, borderColor: '#bfdbfe' },
+  timerExpired: { backgroundColor: '#fee2e2', borderWidth: 1, borderColor: '#fecaca' },
+  timerText: { fontSize: fontSizes.sm, fontWeight: '700', color: '#1e293b' },
+
   codeInput: {
-    height: 64,
-    backgroundColor: '#f9fafb',
-    borderRadius: 12,
-    borderWidth: 2,
-    borderColor: '#e5e7eb',
-    fontSize: 32,
-    fontWeight: '700',
-    textAlign: 'center',
-    letterSpacing: 8,
-    color: '#1f2937',
+    height: scale(64), backgroundColor: '#f8fafc', borderRadius: scale(14), borderWidth: 2, borderColor: '#e2e8f0',
+    fontSize: scale(28), fontWeight: '800', textAlign: 'center', letterSpacing: 8, color: '#1e293b', marginBottom: scale(14),
   },
-  codeInputError: {
-    borderColor: '#ef4444',
-  },
-  codeErrorContainer: {
-    marginTop: 12,
-    padding: 12,
-    backgroundColor: '#fef2f2',
-    borderRadius: 8,
-  },
-  codeErrorText: {
-    fontSize: 13,
-    color: '#ef4444',
-    textAlign: 'center',
-  },
-  verifyButton: {
-    borderRadius: 14,
-    overflow: 'hidden',
-    marginHorizontal: 24,
-    marginBottom: 16,
-    ...Platform.select({
-      ios: {
-        shadowColor: '#0d9488',
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.3,
-        shadowRadius: 8,
-      },
-      android: {
-        elevation: 6,
-      },
-    }),
-  },
-  verifyButtonGradient: {
-    paddingVertical: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  verifyButtonText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#ffffff',
-  },
-  backToRegisterButton: {
-    marginHorizontal: 24,
-    marginBottom: 16,
-    paddingVertical: 12,
-    backgroundColor: '#ef4444',
-    borderRadius: 12,
-    alignItems: 'center',
-  },
-  backToRegisterText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#ffffff',
-  },
-  // Modal styles
-  modalOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 24,
-  },
-  modalContent: {
-    width: '100%',
-    maxWidth: 400,
-    borderRadius: 24,
-    overflow: 'hidden',
-  },
-  modalBlur: {
-    padding: 32,
-    alignItems: 'center',
-  },
-  modalIconContainer: {
-    marginBottom: 20,
-  },
-  modalTitle: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: '#1f2937',
-    marginBottom: 12,
-    textAlign: 'center',
-  },
-  modalText: {
-    fontSize: 15,
-    color: '#6b7280',
-    textAlign: 'center',
-    marginBottom: 24,
-    lineHeight: 22,
-  },
-  modalButton: {
-    borderRadius: 12,
-    overflow: 'hidden',
-    width: '100%',
-  },
-  modalButtonGradient: {
-    paddingVertical: 14,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modalButtonText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#ffffff',
-  },
+  codeInputError: { borderColor: '#ef4444' },
+  codeErrorBox: { padding: scale(10), backgroundColor: '#fef2f2', borderRadius: scale(10), marginBottom: scale(12) },
+  codeErrorText: { fontSize: fontSizes.sm, color: '#dc2626', textAlign: 'center' },
+
+  expiredBackBtn: { marginTop: scale(8), paddingVertical: scale(12), backgroundColor: '#fef2f2', borderRadius: scale(12), alignItems: 'center', borderWidth: 1, borderColor: '#fecaca' },
+  expiredBackText: { fontSize: fontSizes.base, fontWeight: '700', color: '#dc2626' },
+  ghostBtn: { marginTop: scale(10), alignItems: 'center', paddingVertical: scale(8) },
+  ghostBtnText: { fontSize: fontSizes.base, color: '#94a3b8', fontWeight: '500' },
+
+  // Modal
+  modalOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(15,23,42,0.5)', justifyContent: 'center', alignItems: 'center', padding: scale(24), zIndex: 9999, elevation: 9999 },
+  modalContent: { width: '100%', maxWidth: 400, borderRadius: scale(24), overflow: 'hidden', zIndex: 10000, elevation: 10000 },
+  modalInner: { padding: scale(32), alignItems: 'center', borderRadius: scale(24) },
+  successIconCircle: { marginBottom: scale(18) },
+  successIconGradient: { width: scale(72), height: scale(72), borderRadius: scale(36), alignItems: 'center', justifyContent: 'center' },
+  modalTitle: { fontSize: fontSizes.xl, fontWeight: '800', color: '#0f172a', marginBottom: scale(10), textAlign: 'center' },
+  modalText: { fontSize: fontSizes.base, color: '#64748b', textAlign: 'center', marginBottom: scale(24), lineHeight: scale(22) },
+  modalBtn: { borderRadius: scale(14), overflow: 'hidden', width: '100%' },
+  modalBtnGradient: { paddingVertical: scale(14), flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: scale(8) },
+  modalBtnText: { fontSize: fontSizes.md, fontWeight: '700', color: '#ffffff' },
 });
