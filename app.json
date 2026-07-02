@@ -2,7 +2,7 @@
   "expo": {
     "name": "CarSure",
     "slug": "app_car",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "orientation": "portrait",
     "icon": "./assets/carsure-app-icon.png",
     "scheme": "appcar",
@@ -24,6 +24,7 @@
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#ffffff",
+        "backgroundImage": "./assets/carsure-adaptive-background.png",
         "foregroundImage": "./assets/carsure-adaptive-foreground.png"
       },
       "edgeToEdgeEnabled": true,
@@ -42,19 +43,28 @@
     },
     "web": {
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/carsure-app-icon.png"
     },
     "plugins": [
       "expo-router",
+      "expo-web-browser",
       [
         "expo-splash-screen",
         {
-          "image": "./assets/carsure.jpeg",
+          "image": "./assets/splash-logo.png",
           "imageWidth": 200,
           "resizeMode": "contain",
           "backgroundColor": "#ffffff",
           "dark": {
             "backgroundColor": "#ffffff"
+          },
+          "android": {
+            "imageWidth": 200,
+            "resizeMode": "contain"
+          },
+          "ios": {
+            "imageWidth": 220,
+            "resizeMode": "contain"
           }
         }
       ],
@@ -75,6 +85,12 @@
           "cameraPermission": "Cette application a besoin d'accéder à votre caméra pour prendre des photos de véhicules."
         }
       ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Cette application a besoin d'accéder à votre caméra pour scanner les codes QR des véhicules."
+        }
+      ],
       "expo-localization"
     ],
     "experiments": {
@@ -82,7 +98,7 @@
       "reactCompiler": true
     },
     "extra": {
-       "API_URL": "https://server-bun.onrender.com",
+       "API_URL": "https://api.carsure.dz",
       "router": {},
       "eas": {
         "projectId": "b95545e2-f0c9-4012-a8e3-975beeef796a"

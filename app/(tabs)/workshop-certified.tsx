@@ -19,10 +19,12 @@ import { useFocusEffect } from 'expo-router';
 import { ThemedText } from '@/components/themed-text';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { getPadding, getFontSizes, scale } from '@/utils/responsive';
+import { pageTitleBlockStyles } from '@/utils/pageTitleStyles';
 import { apiRequest, getImageUrl } from '@/utils/backend';
 import { useTranslation } from 'react-i18next';
 import { useLocation } from '@/contexts/LocationContext';
 import { haversineKm, normalizeRegion } from '@/utils/geoDistance';
+import { getWorkshopTypeIcon } from '@/utils/workshopDisplay';
 
 const padding = getPadding();
 const fontSizes = getFontSizes();
@@ -312,9 +314,19 @@ export default function WorkshopCertifiedScreen() {
               <ThemedText style={styles.workshopDetail}>{workshop.phone}</ThemedText>
             </View>
 
+            {/* Email */}
+            {!!workshop.email && (
+              <View style={styles.workshopDetailRow}>
+                <IconSymbol name="envelope.fill" size={scale(12)} color="#64748b" />
+                <ThemedText style={styles.workshopDetail} numberOfLines={1}>
+                  {workshop.email}
+                </ThemedText>
+              </View>
+            )}
+
             {/* Type */}
             <View style={styles.workshopDetailRow}>
-              <IconSymbol name="wrench.fill" size={scale(12)} color="#64748b" />
+              <IconSymbol name={getWorkshopTypeIcon(workshop.type)} size={scale(12)} color="#64748b" />
               <ThemedText style={styles.workshopDetail}>{getTypeLabel(workshop.type)}</ThemedText>
             </View>
 
@@ -331,6 +343,7 @@ export default function WorkshopCertifiedScreen() {
                 )}
                 {workshop.locationRegion && (
                   <View style={styles.wilayaBadge}>
+                    <IconSymbol name="globe" size={scale(12)} color="#6366f1" />
                     <ThemedText style={styles.wilayaBadgeText}>
                       {t('workshops.wilaya')}: {workshop.locationRegion}
                     </ThemedText>
@@ -343,18 +356,21 @@ export default function WorkshopCertifiedScreen() {
             <View style={styles.pricesContainer}>
               {hasMec && (
                 <View style={styles.priceBadge}>
+                  <IconSymbol name="wrench.fill" size={scale(12)} color="#0d9488" />
                   <ThemedText style={styles.priceLabel}>{t('workshops.type_mechanic')}:</ThemedText>
                   <ThemedText style={styles.priceValue}>{workshop.price_visit_mec!.toLocaleString()} DA</ThemedText>
                 </View>
               )}
               {hasPaint && (
                 <View style={[styles.priceBadge, styles.priceBadgePaint]}>
+                  <IconSymbol name="paintbrush.fill" size={scale(12)} color="#c2410c" />
                   <ThemedText style={styles.priceLabelPaint}>{t('workshops.type_paint')}:</ThemedText>
                   <ThemedText style={styles.priceValuePaint}>{workshop.price_visit_paint!.toLocaleString()} DA</ThemedText>
                 </View>
               )}
               {!hasMec && !hasPaint && (
                 <View style={styles.priceBadgeEmpty}>
+                  <IconSymbol name="info.circle.fill" size={scale(12)} color="#9ca3af" />
                   <ThemedText style={styles.priceEmptyText}>{t('workshops.priceNotSet')}</ThemedText>
                 </View>
               )}
@@ -404,10 +420,10 @@ export default function WorkshopCertifiedScreen() {
             colors={['rgba(255, 255, 255, 0.98)', 'rgba(255, 255, 255, 0.95)']}
             style={styles.headerGradient}
           >
-            <ThemedText style={styles.title}>{t('workshops.title')}</ThemedText>
-            <ThemedText style={styles.subtitle}>
-              {t('workshops.subtitle')}
-            </ThemedText>
+            <View style={pageTitleBlockStyles.block}>
+              <ThemedText style={pageTitleBlockStyles.cardTitle}>{t('workshops.title')}</ThemedText>
+              <ThemedText style={pageTitleBlockStyles.cardSubtitle}>{t('workshops.subtitle')}</ThemedText>
+            </View>
           </LinearGradient>
         </Animated.View>
 
@@ -579,27 +595,15 @@ const styles = StyleSheet.create({
   header: {
     marginBottom: padding.medium,
     borderRadius: scale(24),
-    overflow: 'hidden',
     marginHorizontal: padding.horizontal,
     marginTop: padding.medium,
   },
   headerGradient: {
-    paddingVertical: padding.medium,
+    paddingVertical: padding.large,
     paddingHorizontal: padding.medium,
     alignItems: 'center',
-  },
-  title: {
-    fontSize: fontSizes['2xl'],
-    fontWeight: '900',
-    color: '#1f2937',
-    marginBottom: scale(2),
-    textAlign: 'center',
-  },
-  subtitle: {
-    fontSize: fontSizes.sm,
-    color: '#64748b',
-    textAlign: 'center',
-    marginTop: 0,
+    borderRadius: scale(24),
+    overflow: 'hidden',
   },
   searchContainer: {
     paddingHorizontal: padding.horizontal,
@@ -825,6 +829,9 @@ const styles = StyleSheet.create({
     color: '#3b82f6',
   },
   wilayaBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: scale(4),
     paddingVertical: scale(2),
     paddingHorizontal: scale(6),
     borderRadius: scale(8),
@@ -879,6 +886,9 @@ const styles = StyleSheet.create({
     color: '#c2410c',
   },
   priceBadgeEmpty: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: scale(4),
     paddingVertical: scale(3),
     paddingHorizontal: scale(8),
     borderRadius: scale(8),

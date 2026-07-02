@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react';
+import React, { useRef, useState, useCallback, useMemo, useEffect } from 'react';
 import {
   StyleSheet,
   ScrollView,
@@ -10,9 +10,10 @@ import {
   Modal,
   TextInput,
   ActivityIndicator,
+  RefreshControl,
 } from 'react-native';
 import { Image } from 'expo-image';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import Animated, {
   FadeInDown,
   FadeInUp,
@@ -41,6 +42,13 @@ import { useNotifications } from '@/hooks/useNotifications';
 import { useTranslation } from 'react-i18next';
 // Removed BlurView import - using gradient backgrounds instead for better compatibility
 
+import { usePullToRefresh } from '@/hooks/usePullToRefresh';
+import { pageTitleBlockStyles } from '@/utils/pageTitleStyles';
+import { AppLogo } from '@/components/AppLogo';
+import { isPublicCarSponsorActive } from '@/utils/sponsor';
+import { promptPushNotificationPermissionFirstTime } from '@/utils/appPermissions';
+import { openChatWithUser, getUserIdString } from '@/utils/openChatWithUser';
+import { FullscreenImageViewer, useFullscreenImageViewer } from '@/components/FullscreenImageViewer';
 import {
   SCREEN_WIDTH,
   SCREEN_HEIGHT,
@@ -55,16 +63,32 @@ import {
 const padding = getPadding();
 const fontSizes = getFontSizes();
 
+/** Bottom space so the last home sections clear the floating tab bar on APK/iOS. */
+function getHomeScrollBottomPadding(insets: { bottom: number }): number {
+  const tabBarHeight = Platform.OS === 'ios' ? scale(72) : scale(68);
+  const tabBarBottom =
+    Platform.OS === 'ios'
+      ? Math.max(insets.bottom + scale(16), scale(22))
+      : Math.max(insets.bottom + scale(12), scale(18));
+  return tabBarHeight + tabBarBottom + scale(24);
+}
+
 // Carousel data - you can replace with actual car images
 // Carousel will use active cars data
 
 const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpacity);
 
+function resolveCarImageUris(images?: string[]): string[] {
+  return (images ?? [])
+    .map((img) => getImageUrl(img))
+    .filter((uri): uri is string => Boolean(uri));
+}
+
 export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const { isAuthenticated, user, logout, token } = useAuth();
-  const { notifications, unreadCount: unreadNotificationsCount, markAsRead, markAllAsRead } = useNotifications();
+  const { notifications, unreadCount: unreadNotificationsCount, markAsRead, markAllAsRead, fetchNotifications } = useNotifications();
   const { t, i18n } = useTranslation();
   // Exclude message notifications from header badge count (only show non-message notifications)
   const nonMessageNotificationsCount = notifications.filter((n) => !n.is_read && n.type !== 'message').length;
@@ -100,6 +124,7 @@ export default function HomeScreen() {
     usedby: '',
   });
   const [showFilters, setShowFilters] = useState(false);
+  const { viewer, openViewer, closeViewer } = useFullscreenImageViewer();
   
   // Animation values
   const heroOpacity = useSharedValue(0);
@@ -117,30 +142,14 @@ export default function HomeScreen() {
   const trustBadgeRotation = useSharedValue(-10);
   
 
-  // Fetch user image when authenticated
-  React.useEffect(() => {
-    const fetchUserImage = async () => {
-      if (isAuthenticated && user?._id) {
-        try {
-          const response = await apiRequest(`/user-image/${user._id}`);
-          if (response.ok) {
-            const data = await response.json();
-            if (data.ok && data.userImage?.image) {
-              setUserImage(getImageUrl(data.userImage.image));
-            }
-          }
-        } catch (error) {
-          console.error('Error fetching user image:', error);
-        }
-      } else {
-        setUserImage(null);
-      }
-    };
-
-    fetchUserImage();
-  }, [isAuthenticated, user]);
-
   // Notifications are now handled by useNotifications hook
+
+  // First app visit (home): system push notification permission dialog.
+  useFocusEffect(
+    useCallback(() => {
+      void promptPushNotificationPermissionFirstTime();
+    }, []),
+  );
 
   React.useEffect(() => {
     // Staggered entrance animations
@@ -267,6 +276,9 @@ export default function HomeScreen() {
   // Get user initials
   const getUserInitials = () => {
     if (!user) return 'U';
+    if (user.type === 'workshop' && (user as { name?: string }).name) {
+      return (user as { name?: string }).name!.substring(0, 2).toUpperCase();
+    }
     const firstName = user.firstName || '';
     const lastName = user.lastName || '';
     if (firstName && lastName) {
@@ -322,9 +334,9 @@ export default function HomeScreen() {
 
 
   // Fetch active cars
-  const fetchActiveCars = async (filters?: typeof searchFilters) => {
+  const fetchActiveCars = useCallback(async (filters?: typeof searchFilters, silent = false) => {
     try {
-      setLoadingCars(true);
+      if (!silent) setLoadingCars(true);
       const params = new URLSearchParams();
       if (filters) {
         if (filters.brand) params.append('brand', filters.brand);
@@ -343,11 +355,11 @@ export default function HomeScreen() {
         if (filters.accident) params.append('accident', filters.accident);
         if (filters.usedby) params.append('usedby', filters.usedby);
       }
-      
+
       const queryString = params.toString();
       const endpoint = `/car/active${queryString ? `?${queryString}` : ''}`;
       const response = await apiRequest(endpoint);
-      
+
       if (response.ok) {
         const data = await response.json();
         if (data.ok && data.cars) {
@@ -359,20 +371,80 @@ export default function HomeScreen() {
     } finally {
       setLoadingCars(false);
     }
-  };
-
-  // Fetch cars on mount
-  React.useEffect(() => {
-    fetchActiveCars();
   }, []);
 
-  // Reset carousel index when cars change
+  const fetchUserImage = useCallback(async () => {
+    if (isAuthenticated && user?._id) {
+      try {
+        const response = await apiRequest(`/user-image/${user._id}`);
+        if (response.ok) {
+          const data = await response.json();
+          if (data.ok && data.userImage?.image) {
+            setUserImage(getImageUrl(data.userImage.image));
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching user image:', error);
+      }
+    } else {
+      setUserImage(null);
+    }
+  }, [isAuthenticated, user?._id]);
+
+  const refreshHomeData = useCallback(async () => {
+    await Promise.all([
+      fetchActiveCars(searchFilters, true),
+      fetchUserImage(),
+      fetchNotifications?.() ?? Promise.resolve(),
+    ]);
+  }, [fetchActiveCars, searchFilters, fetchUserImage, fetchNotifications]);
+
+  const { refreshing, onRefresh } = usePullToRefresh(refreshHomeData);
+
+  useFocusEffect(
+    useCallback(() => {
+      void fetchActiveCars(searchFilters, true);
+    }, [fetchActiveCars, searchFilters])
+  );
+
   React.useEffect(() => {
+    void fetchUserImage();
+  }, [fetchUserImage]);
+
+  // Re-check sponsor windows every minute so expired promotions disappear.
+  const [sponsorNow, setSponsorNow] = useState(() => Date.now());
+  useEffect(() => {
+    const interval = setInterval(() => setSponsorNow(Date.now()), 60_000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const carouselCars = useMemo(
+    () =>
+      cars.filter(
+        (car) =>
+          car.status === 'actif' &&
+          isPublicCarSponsorActive(car.sponsor, sponsorNow),
+      ),
+    [cars, sponsorNow],
+  );
+
+  // Reset carousel index when sponsored carousel set changes
+  useEffect(() => {
     setCurrentCarouselIndex(0);
-  }, [cars]);
+  }, [carouselCars.length]);
 
   const handleSearch = () => {
     fetchActiveCars(searchFilters);
+  };
+
+  const handleOpenSellerChat = (owner: unknown) => {
+    openChatWithUser({
+      router,
+      isAuthenticated,
+      currentUserId: user?._id,
+      otherUserId: owner,
+      t,
+    });
   };
 
   const handleFilterChange = (field: string, value: string) => {
@@ -403,13 +475,6 @@ export default function HomeScreen() {
         return { text: status, colors: ['#6b7280', '#4b5563'] as const };
     }
   };
-
-  // Hero carousel: only show cars that currently have an active sponsor (the
-  // `sponsor` field is attached server-side by /car/active). Non-sponsored
-  // cars still appear lower in the page in the regular grid. No slice cap —
-  // every paid sponsorship gets a slot, ordered by whatever order the backend
-  // returns (typically newest first).
-  const carouselCars = cars.filter(car => car.status === 'actif' && car.sponsor);
 
   const handleCarouselPrev = () => {
     if (carouselCars.length === 0) return;
@@ -442,15 +507,14 @@ export default function HomeScreen() {
         style={styles.scrollView}
         contentContainerStyle={[
           styles.scrollContent,
-          {
-            paddingBottom: Platform.OS === 'ios' 
-              ? scale(100) 
-              : scale(100) + Math.max(insets.bottom, 0), // Account for tab bar height + Android nav bar
-          }
+          { paddingBottom: getHomeScrollBottomPadding(insets) },
         ]}
         showsVerticalScrollIndicator={false}
         onScroll={scrollHandler}
         scrollEventThrottle={16}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0d9488" colors={['#0d9488']} />
+        }
       >
         {/* Header with Logo and Auth/User Button */}
         <Animated.View
@@ -467,13 +531,7 @@ export default function HomeScreen() {
                 entering={FadeInDown.duration(600).delay(100).springify()}
                 style={styles.logoContainer}
               >
-                <Animated.View style={styles.logoImageContainer}>
-                  <Image
-                    source={require('@/assets/carsure.jpeg')}
-                    style={styles.logoImage}
-                    contentFit="contain"
-                  />
-                </Animated.View>
+                <AppLogo variant="header" />
                 <View style={styles.logoTextContainer}>
                   <ThemedText style={styles.logoTextMain}>CarSure</ThemedText>
                 </View>
@@ -592,7 +650,7 @@ export default function HomeScreen() {
                 activeOpacity={0.9}
               >
                 <LinearGradient
-                  colors={['rgba(255, 255, 255, 0.95)', 'rgba(255, 255, 255, 0.85)']}
+                  colors={['rgba(255, 255, 255, 0.95)', 'rgba(255, 255, 255, 0.99)']}
                   style={styles.secondaryButtonBlur}
                 >
                   <ThemedText style={styles.secondaryButtonText}>
@@ -614,7 +672,7 @@ export default function HomeScreen() {
                 style={styles.certificationBadge}
               >
                 <LinearGradient
-                  colors={['rgba(255, 255, 255, 0.98)', 'rgba(255, 255, 255, 0.95)']}
+                  colors={['rgba(255, 255, 255, 0.98)', 'rgba(255, 255, 255, 0.98)']}
                   style={styles.certificationBadgeBlur}
                 >
                   <IconSymbol name="checkmark.circle.fill" size={16} color="#0d9488" />
@@ -655,12 +713,17 @@ export default function HomeScreen() {
                           style={styles.carouselItem}
                         >
                           {carImage ? (
-                            <Image
-                              source={{ uri: carImage }}
-                              style={styles.carouselImage}
-                              contentFit="cover"
-                              transition={300}
-                            />
+                            <TouchableOpacity
+                              activeOpacity={0.95}
+                              onPress={() => openViewer(resolveCarImageUris(car.images), 0)}
+                            >
+                              <Image
+                                source={{ uri: carImage }}
+                                style={styles.carouselImage}
+                                contentFit="cover"
+                                transition={300}
+                              />
+                            </TouchableOpacity>
                           ) : (
                             <View style={styles.carouselImagePlaceholder}>
                               <IconSymbol name="car.fill" size={64} color="#9ca3af" />
@@ -672,7 +735,7 @@ export default function HomeScreen() {
                           />
                           {/* Sponsored badge — appears on cars with an active
                               sponsor so the promoted slot is visible to users. */}
-                          {car.sponsor && (
+                          {isPublicCarSponsorActive(car.sponsor, sponsorNow) && (
                             <View style={styles.carouselSponsorBadge}>
                               <LinearGradient
                                 colors={['#f59e0b', '#d97706']}
@@ -697,7 +760,6 @@ export default function HomeScreen() {
                               <ThemedText style={styles.carouselCarDetail}>
                                 {car.km?.toLocaleString() || 0} {t('home.mileageUnit')}
                               </ThemedText>
-                              <ThemedText style={styles.carouselCarDetail}>•</ThemedText>
                               <ThemedText style={styles.carouselCarDetail}>{car.year}</ThemedText>
                             </View>
                           </View>
@@ -765,14 +827,18 @@ export default function HomeScreen() {
 
           {/* Car Listings Section */}
           <Animated.View
-            entering={FadeInDown.duration(600).delay(400).springify()}
+            entering={
+              Platform.OS === 'android'
+                ? undefined
+                : FadeInDown.duration(600).delay(400).springify()
+            }
             style={styles.carListingsSection}
           >
-            <View style={styles.carListingsHeader}>
-              <ThemedText style={styles.carListingsTitle}>
+            <View style={[pageTitleBlockStyles.block, styles.carListingsHeader]}>
+              <ThemedText style={pageTitleBlockStyles.cardTitle}>
                 {t('home.latestOffersTitle')}
               </ThemedText>
-              <ThemedText style={styles.carListingsSubtitle}>
+              <ThemedText style={pageTitleBlockStyles.cardSubtitle}>
                 {t('home.latestOffersSubtitle')}
               </ThemedText>
             </View>
@@ -1185,7 +1251,11 @@ export default function HomeScreen() {
                   return (
                     <Animated.View
                       key={car._id || car.id}
-                      entering={FadeInDown.duration(400).delay(index * 100).springify()}
+                      entering={
+                        Platform.OS === 'android'
+                          ? undefined
+                          : FadeInDown.duration(400).delay(Math.min(index * 80, 320)).springify()
+                      }
                       style={styles.webStyleCarCard}
                     >
                       <LinearGradient
@@ -1193,43 +1263,45 @@ export default function HomeScreen() {
                         style={styles.webStyleCarCardBlur}
                       >
                         {/* Car Image - Full Width Top */}
-                        <TouchableOpacity
-                          onPress={() => router.push(`/car/${car._id || car.id}`)}
-                          activeOpacity={0.9}
-                        >
-                          <View style={styles.webStyleCarImageContainer}>
-                            {car.images && car.images.length > 0 && getImageUrl(car.images[0]) ? (
+                        <View style={styles.webStyleCarImageContainer}>
+                          {car.images && car.images.length > 0 && getImageUrl(car.images[0]) ? (
+                            <TouchableOpacity
+                              activeOpacity={0.95}
+                              onPress={() => openViewer(resolveCarImageUris(car.images), 0)}
+                              style={styles.webStyleCarImageTouchable}
+                            >
                               <Image
                                 source={{ uri: getImageUrl(car.images[0])! }}
                                 style={styles.webStyleCarImage}
                                 contentFit="cover"
                               />
-                            ) : (
-                              <View style={styles.webStyleCarImagePlaceholder}>
-                                <IconSymbol name="car.fill" size={64} color="#9ca3af" />
-                              </View>
-                            )}
+                            </TouchableOpacity>
+                          ) : (
+                            <View style={styles.webStyleCarImagePlaceholder}>
+                              <IconSymbol name="car.fill" size={64} color="#9ca3af" />
+                            </View>
+                          )}
+                          <LinearGradient
+                            colors={['transparent', 'rgba(0,0,0,0.3)']}
+                            style={styles.webStyleCarImageOverlay}
+                            pointerEvents="none"
+                          />
+                          {/* Status Badge */}
+                          <View style={styles.webStyleCarStatusBadge} pointerEvents="none">
                             <LinearGradient
-                              colors={['transparent', 'rgba(0,0,0,0.3)']}
-                              style={styles.webStyleCarImageOverlay}
-                            />
-                            {/* Status Badge */}
-                            <View style={styles.webStyleCarStatusBadge}>
-                              <LinearGradient
-                                colors={statusBadge.colors}
-                                style={styles.webStyleCarStatusBadgeGradient}
-                              >
-                                <ThemedText style={styles.webStyleCarStatusText}>
-                                  {car.status === 'actif' ? `✓ ${t('workshops.certified')}` : statusBadge.text}
-                                </ThemedText>
-                              </LinearGradient>
-                            </View>
-                            {/* Year Badge */}
-                            <View style={styles.webStyleCarYearBadge}>
-                              <ThemedText style={styles.webStyleCarYearText}>{car.year}</ThemedText>
-                            </View>
+                              colors={statusBadge.colors}
+                              style={styles.webStyleCarStatusBadgeGradient}
+                            >
+                              <ThemedText style={styles.webStyleCarStatusText}>
+                                {car.status === 'actif' ? `✓ ${t('workshops.certified')}` : statusBadge.text}
+                              </ThemedText>
+                            </LinearGradient>
                           </View>
-                        </TouchableOpacity>
+                          {/* Year Badge */}
+                          <View style={styles.webStyleCarYearBadge} pointerEvents="none">
+                            <ThemedText style={styles.webStyleCarYearText}>{car.year}</ThemedText>
+                          </View>
+                        </View>
 
                         {/* Car Info Section */}
                         <View style={styles.webStyleCarInfo}>
@@ -1247,7 +1319,7 @@ export default function HomeScreen() {
                           {car.owner && typeof car.owner === 'object' && (
                             <TouchableOpacity
                               onPress={() => {
-                                const ownerId = car.owner._id || car.owner.id;
+                                const ownerId = getUserIdString(car.owner);
                                 if (ownerId) {
                                   router.push(`/user/${ownerId}` as any);
                                 }
@@ -1354,7 +1426,7 @@ export default function HomeScreen() {
                             </TouchableOpacity>
                             {isAuthenticated && car.owner && typeof car.owner === 'object' && car.owner._id !== user?._id && (
                               <TouchableOpacity
-                                onPress={() => router.push(`/(tabs)/chat?userId=${car.owner._id}`)}
+                                onPress={() => handleOpenSellerChat(car.owner)}
                                 style={styles.webStyleCarChatButton}
                                 activeOpacity={0.9}
                               >
@@ -1375,30 +1447,25 @@ export default function HomeScreen() {
               </View>
             )}
           </Animated.View>
+        </View>
 
-          {/* Introduction — modern responsive card + staggered animations (after listings) */}
-          <Animated.View
-            entering={FadeInUp.duration(700).springify()}
-            style={styles.introFooterOuter}
+        {/* Introduction — after listings (plain View: Reanimated entering breaks on Android APK when off-screen) */}
+        <View style={styles.introFooterOuter} collapsable={false}>
+          <LinearGradient
+            colors={['rgba(255, 255, 255, 0.95)', 'rgba(240, 253, 250, 0.88)', 'rgba(255, 255, 255, 0.92)']}
+            locations={[0, 0.45, 1]}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.introFooterSection}
           >
             <LinearGradient
-              colors={['rgba(255, 255, 255, 0.95)', 'rgba(240, 253, 250, 0.88)', 'rgba(255, 255, 255, 0.92)']}
-              locations={[0, 0.45, 1]}
+              colors={['rgba(13, 148, 136, 0.14)', 'rgba(45, 212, 191, 0.06)', 'transparent']}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
-              style={styles.introFooterSection}
-            >
-              <LinearGradient
-                colors={['rgba(13, 148, 136, 0.14)', 'rgba(45, 212, 191, 0.06)', 'transparent']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={StyleSheet.absoluteFillObject}
-              />
-              <View style={styles.introFooterContent}>
-                <Animated.View
-                  entering={ZoomIn.duration(420).delay(60).springify()}
-                  style={[styles.trustBadge, styles.introFooterTrustBadge, trustBadgeAnimatedStyle]}
-                >
+              style={StyleSheet.absoluteFillObject}
+            />
+            <View style={styles.introFooterContent}>
+              <Animated.View style={[styles.trustBadge, styles.introFooterTrustBadge, trustBadgeAnimatedStyle]}>
                   <LinearGradient
                     colors={['#ecfeff', '#ccfbf1', '#99f6e4']}
                     style={[styles.trustBadgeGradient, styles.introFooterTrustBadgeInner]}
@@ -1416,7 +1483,7 @@ export default function HomeScreen() {
                   </LinearGradient>
                 </Animated.View>
 
-                <Animated.View entering={FadeInUp.duration(520).delay(120).springify()}>
+                <View>
                   <ThemedText style={[styles.mainHeadline, styles.introFooterHeadline]}>
                     {t('home.headlinePre')}{' '}
                     <ThemedText style={styles.highlightText}>
@@ -1424,21 +1491,15 @@ export default function HomeScreen() {
                     </ThemedText>{' '}
                     {t('home.headlinePost')}
                   </ThemedText>
-                </Animated.View>
+                </View>
 
-                <Animated.View
-                  entering={FadeInUp.duration(520).delay(200).springify()}
-                  style={styles.introFooterDescriptionWrap}
-                >
+                <View style={styles.introFooterDescriptionWrap}>
                   <ThemedText style={[styles.description, styles.introFooterDescription]}>
                     {t('home.description')}
                   </ThemedText>
-                </Animated.View>
+                </View>
 
-                <Animated.View
-                  entering={FadeInUp.duration(520).delay(280).springify()}
-                  style={[styles.trustIndicators, styles.introFooterTrustIndicators]}
-                >
+                <View style={[styles.trustIndicators, styles.introFooterTrustIndicators]}>
                   <View style={[styles.trustBadgeSmall, styles.introFooterChip]}>
                     <LinearGradient
                       colors={['#f0fdf4', '#dcfce7']}
@@ -1475,58 +1536,64 @@ export default function HomeScreen() {
                       </ThemedText>
                     </LinearGradient>
                   </View>
-                </Animated.View>
+                </View>
 
-                <Animated.View
-                  entering={FadeInUp.duration(560).delay(360).springify()}
-                  style={[styles.ctaButtons, styles.introFooterCtas]}
-                >
+                <View style={[styles.ctaButtons, styles.introFooterCtas]}>
                   <AnimatedTouchableOpacity
                     onPress={handlePrimaryButtonPress}
-                    style={[styles.primaryButton, styles.introFooterPrimaryBtn, primaryButtonAnimatedStyle]}
-                    activeOpacity={0.9}
+                    style={[styles.introFooterWhiteBtn, primaryButtonAnimatedStyle]}
+                    activeOpacity={0.85}
                   >
-                    <LinearGradient
-                      colors={['#0f766e', '#0d9488', '#14b8a6', '#2dd4bf']}
-                      style={[styles.primaryButtonGradient, styles.introFooterPrimaryGradient]}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                    >
+                    <View style={styles.introFooterWhiteInner}>
                       <IconSymbol
                         name="magnifyingglass"
                         size={isSmallDevice() ? 19 : 22}
-                        color="#fff"
+                        color="#0d9488"
                       />
-                      <ThemedText style={[styles.primaryButtonText, styles.introFooterPrimaryText]}>
+                      <ThemedText
+                        lightColor="#0f172a"
+                        darkColor="#0f172a"
+                        style={styles.introFooterWhiteText}
+                      >
                         {t('home.findCar')}
                       </ThemedText>
                       <IconSymbol
                         name="chevron.right"
                         size={isSmallDevice() ? 16 : 18}
-                        color="#fff"
+                        color="#0d9488"
                       />
-                    </LinearGradient>
+                    </View>
                   </AnimatedTouchableOpacity>
 
                   <AnimatedTouchableOpacity
                     onPress={handleSecondaryButtonPress}
-                    style={[styles.secondaryButton, styles.introFooterSecondaryBtn, secondaryButtonAnimatedStyle]}
-                    activeOpacity={0.9}
+                    style={[styles.introFooterWhiteBtn, secondaryButtonAnimatedStyle]}
+                    activeOpacity={0.85}
                   >
-                    <LinearGradient
-                      colors={['rgba(255, 255, 255, 0.98)', 'rgba(248, 250, 252, 0.92)']}
-                      style={[styles.secondaryButtonBlur, styles.introFooterSecondaryBlur]}
-                    >
-                      <ThemedText style={[styles.secondaryButtonText, styles.introFooterSecondaryText]}>
+                    <View style={styles.introFooterWhiteInner}>
+                      <IconSymbol
+                        name="plus.circle.fill"
+                        size={isSmallDevice() ? 19 : 22}
+                        color="#0d9488"
+                      />
+                      <ThemedText
+                        lightColor="#0f172a"
+                        darkColor="#0f172a"
+                        style={styles.introFooterWhiteText}
+                      >
                         {t('home.sellCar')}
                       </ThemedText>
-                    </LinearGradient>
+                      <IconSymbol
+                        name="chevron.right"
+                        size={isSmallDevice() ? 16 : 18}
+                        color="#0d9488"
+                      />
+                    </View>
                   </AnimatedTouchableOpacity>
-                </Animated.View>
+                </View>
               </View>
             </LinearGradient>
-          </Animated.View>
-        </View>
+          </View>
       </Animated.ScrollView>
 
       {/* Auth Menu Modal */}
@@ -1610,9 +1677,11 @@ export default function HomeScreen() {
                   )}
                   <View style={styles.userMenuInfo}>
                     <ThemedText style={styles.userMenuName}>
-                      {user?.firstName && user?.lastName
-                        ? `${user.firstName} ${user.lastName}`
-                        : user?.email || 'Utilisateur'}
+                      {user?.type === 'workshop' && (user as { name?: string }).name
+                        ? (user as { name?: string }).name
+                        : user?.firstName && user?.lastName
+                          ? `${user.firstName} ${user.lastName}`
+                          : user?.firstName || user?.email?.split('@')[0] || t('profile.defaultUser')}
                     </ThemedText>
                     <ThemedText style={styles.userMenuEmail}>
                       {user?.email}
@@ -1756,7 +1825,11 @@ export default function HomeScreen() {
                           
                           // Navigate based on notification type (like web dashboard)
                           if (notification.type === 'message') {
-                            router.push(`/(tabs)/chat?userId=${notification.id_sender?._id || notification.id_sender?.id || notification.id_sender}`);
+                            handleOpenSellerChat(
+                              notification.id_sender?._id ||
+                                notification.id_sender?.id ||
+                                notification.id_sender,
+                            );
                           } else if (
                             notification.type === 'done_rdv_workshop' || 
                             notification.type === 'cancel_rdv_workshop' || 
@@ -1807,6 +1880,13 @@ export default function HomeScreen() {
           </Animated.View>
         </View>
       </Modal>
+
+      <FullscreenImageViewer
+        visible={viewer.visible}
+        uris={viewer.uris}
+        initialIndex={viewer.initialIndex}
+        onClose={closeViewer}
+      />
     </SafeAreaView>
   );
 }
@@ -1861,28 +1941,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: scale(10),
   },
-  logoImageContainer: {
-    width: scale(50),
-    height: scale(50),
-    borderRadius: scale(12),
-    overflow: 'hidden',
-    backgroundColor: 'transparent',
-    ...Platform.select({
-      ios: {
-        shadowColor: 'transparent',
-        shadowOffset: { width: 0, height: 0 },
-        shadowOpacity: 0,
-        shadowRadius: 0,
-      },
-      android: {
-        elevation: 0,
-      },
-    }),
-  },
-  logoImage: {
-    width: '100%',
-    height: '100%',
-  },
   logoTextContainer: {
     marginLeft: scale(4),
   },
@@ -1891,6 +1949,11 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: '#1f2937',
     letterSpacing: 0.5,
+    lineHeight: Math.round(fontSizes.xl * 1.35),
+    ...Platform.select({
+      android: { includeFontPadding: false },
+      default: {},
+    }),
   },
   authMenuContainer: {
     position: 'relative',
@@ -2275,38 +2338,35 @@ const styles = StyleSheet.create({
   },
   mainContent: {
     flexDirection: SCREEN_WIDTH < 768 ? 'column' : 'row',
-    flexWrap: 'wrap',
+    flexWrap: 'nowrap',
     padding: padding.large,
-    gap: scale(28),
+    gap: scale(10),
     zIndex: 1,
   },
   heroSection: {
     flex: 1,
     width: SCREEN_WIDTH < 768 ? '100%' : '48%',
     minWidth: SCREEN_WIDTH < 768 ? SCREEN_WIDTH - 48 : 400,
-    gap: 28,
-    paddingTop: 8,
+    gap: scale(12),
+    paddingTop: 4,
   },
   ctaTopSection: {
     width: '100%',
     flexBasis: '100%',
     minWidth: '100%',
     flexGrow: 0,
-    gap: 16,
-    paddingBottom: 4,
+    gap: scale(12),
+    paddingBottom: 0,
+    marginBottom: 0,
   },
   introFooterOuter: {
-    flex: 0,
-    flexGrow: 0,
-    flexShrink: 0,
     alignSelf: 'stretch',
     width: '100%',
-    maxWidth: '100%',
-    flexBasis: '100%',
-    minWidth: '100%',
     marginTop: scale(SCREEN_WIDTH < 400 ? 16 : 24),
-    paddingHorizontal: SCREEN_WIDTH < 400 ? scale(4) : scale(8),
+    marginBottom: scale(8),
+    paddingHorizontal: padding.large + (SCREEN_WIDTH < 400 ? scale(4) : scale(8)),
     alignItems: 'center',
+    zIndex: 1,
   },
   introFooterSection: {
     width: '100%',
@@ -2410,31 +2470,46 @@ const styles = StyleSheet.create({
     gap: scale(SCREEN_WIDTH < 400 ? 10 : 14),
     alignItems: 'stretch',
   },
-  introFooterPrimaryBtn: {
+  introFooterWhiteBtn: {
     width: '100%',
     borderRadius: scale(SCREEN_WIDTH < 400 ? 16 : 18),
+    overflow: 'hidden',
+    backgroundColor: '#ffffff',
+    borderWidth: 1.5,
+    borderColor: 'rgba(13, 148, 136, 0.22)',
+    ...Platform.select({
+      ios: {
+        shadowColor: '#0d9488',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 6,
+      },
+      android: {
+        elevation: 2,
+      },
+    }),
   },
-  introFooterPrimaryGradient: {
+  introFooterWhiteInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: scale(SCREEN_WIDTH < 400 ? 8 : 12),
     paddingVertical: scale(SCREEN_WIDTH < 400 ? 14 : 18),
     paddingHorizontal: scale(SCREEN_WIDTH < 400 ? 16 : 28),
-    gap: scale(SCREEN_WIDTH < 400 ? 8 : 12),
+    backgroundColor: 'transparent',
   },
-  introFooterPrimaryText: {
+  introFooterWhiteText: {
+    color: '#0f172a',
+    backgroundColor: 'transparent',
     fontSize: isSmallDevice() ? fontSizes.sm + 1 : 17,
+    fontWeight: '700',
     flexShrink: 1,
     textAlign: 'center',
-  },
-  introFooterSecondaryBtn: {
-    width: '100%',
-    borderRadius: scale(SCREEN_WIDTH < 400 ? 16 : 18),
-  },
-  introFooterSecondaryBlur: {
-    paddingVertical: scale(SCREEN_WIDTH < 400 ? 14 : 18),
-    paddingHorizontal: scale(SCREEN_WIDTH < 400 ? 16 : 28),
-  },
-  introFooterSecondaryText: {
-    fontSize: isSmallDevice() ? fontSizes.sm + 1 : 17,
-    textAlign: 'center',
+    lineHeight: Math.round((isSmallDevice() ? fontSizes.sm + 1 : 17) * 1.25),
+    ...Platform.select({
+      android: { includeFontPadding: false, textAlignVertical: 'center' },
+      default: {},
+    }),
   },
   trustBadge: {
     alignSelf: 'flex-start',
@@ -2549,8 +2624,9 @@ const styles = StyleSheet.create({
     color: '#166534',
   },
   ctaButtons: {
-    gap: 14,
-    marginTop: 12,
+    gap: scale(12),
+    marginTop: scale(4),
+    marginBottom: 0,
   },
   primaryButton: {
     borderRadius: 18,
@@ -2611,11 +2687,13 @@ const styles = StyleSheet.create({
     letterSpacing: 0.3,
   },
   carouselContainer: {
-    flex: 1,
+    flex: 0,
+    flexGrow: 0,
     width: SCREEN_WIDTH < 768 ? '100%' : '48%',
     minWidth: SCREEN_WIDTH < 768 ? SCREEN_WIDTH - 40 : 400,
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
+    marginTop: scale(4),
   },
   carouselWrapper: {
     width: '100%',
@@ -2758,9 +2836,9 @@ const styles = StyleSheet.create({
     textShadowRadius: 2,
   },
   carouselCarDetails: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: scale(8),
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    gap: scale(4),
   },
   carouselCarDetail: {
     fontSize: fontSizes.sm,
@@ -2855,19 +2933,6 @@ const styles = StyleSheet.create({
   },
   carListingsHeader: {
     marginBottom: padding.large * 1.5,
-    alignItems: 'center',
-  },
-  carListingsTitle: {
-    fontSize: fontSizes['3xl'],
-    fontWeight: '800',
-    color: '#1f2937',
-    marginBottom: padding.small,
-    textAlign: 'center',
-  },
-  carListingsSubtitle: {
-    fontSize: fontSizes.md,
-    color: '#6b7280',
-    textAlign: 'center',
   },
   // Modern Filter Styles
   modernFilterSection: {
@@ -3085,6 +3150,10 @@ const styles = StyleSheet.create({
     position: 'relative',
     backgroundColor: '#f3f4f6',
   },
+  webStyleCarImageTouchable: {
+    width: '100%',
+    height: '100%',
+  },
   webStyleCarImage: {
     width: '100%',
     height: '100%',
@@ -3219,8 +3288,8 @@ const styles = StyleSheet.create({
     }),
   },
   webStyleCarDetailsRow: {
-    flexDirection: 'row',
-    gap: scale(16),
+    flexDirection: 'column',
+    gap: scale(10),
     backgroundColor: '#f9fafb',
     padding: padding.medium,
     borderRadius: scale(16),
@@ -3229,7 +3298,6 @@ const styles = StyleSheet.create({
     marginBottom: scale(12),
   },
   webStyleCarDetailBox: {
-    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     gap: scale(10),

@@ -13,6 +13,7 @@ import Constants from 'expo-constants';
 import { io, Socket } from 'socket.io-client';
 import { useAuth } from '@/contexts/AuthContext';
 import { apiRequest, getBackendUrl } from '@/utils/backend';
+import { createAsyncThrottle } from '@/utils/requestThrottle';
 
 let notificationHandlerConfigured = false;
 
@@ -29,7 +30,7 @@ async function savePushTokenToBackend(
   expoPushToken: string,
   authJwt: string
 ): Promise<boolean> {
-  const maxAttempts = 3;
+  const maxAttempts = 2;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       const response = await apiRequest('/user/push-token', {
@@ -123,6 +124,7 @@ interface NotificationContextType {
 }
 
 const NotificationContext = createContext<NotificationContextType | undefined>(undefined);
+const throttledFetchNotifications = createAsyncThrottle(3000);
 
 export function NotificationProvider({ children }: { children: ReactNode }) {
   const { isAuthenticated, user, token: authJwt } = useAuth();
@@ -206,7 +208,7 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
     if (!isAuthenticated || !user?._id) {
       return;
     }
-    fetchNotifications();
+    void throttledFetchNotifications(() => fetchNotifications());
   }, [isAuthenticated, user?._id, fetchNotifications]);
 
   useEffect(() => {
@@ -285,8 +287,8 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
         return updated.slice(0, 50);
       });
 
-      // Single source of truth for counts + OS badge (avoids duplicate increments vs fetch).
-      void fetchNotifications();
+      // Single source of truth for counts + OS badge (debounced to avoid API storms).
+      void throttledFetchNotifications(() => fetchNotifications());
     });
 
     socket.on('disconnect', () => console.log('Socket disconnected'));
@@ -326,11 +328,11 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
       if (!Notifications || cancelled) return;
 
       notificationListener.current = Notifications.addNotificationReceivedListener(() => {
-        void fetchNotifications();
+        void throttledFetchNotifications(() => fetchNotifications());
       });
 
       responseListener.current = Notifications.addNotificationResponseReceivedListener(() => {
-        void fetchNotifications();
+        void throttledFetchNotifications(() => fetchNotifications());
       });
     })();
 
@@ -350,7 +352,7 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state) => {
       if (state === 'active' && isAuthenticated && user?._id) {
-        void fetchNotifications();
+        void throttledFetchNotifications(() => fetchNotifications());
       }
     });
     return () => sub.remove();
@@ -418,10 +420,10 @@ export function NotificationProvider({ children }: { children: ReactNode }) {
         });
       }
       await apiRequest(`/notification/read-chat-messages/${otherUserId}`, { method: 'PUT' });
-      await fetchNotifications();
+      void fetchNotifications();
     } catch (error) {
       console.error('Error marking chat messages as read:', error);
-      await fetchNotifications();
+      void fetchNotifications();
     }
   };
 

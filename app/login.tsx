@@ -20,7 +20,6 @@ import Animated, {
   FadeInUp,
   FadeIn,
   ZoomIn,
-  SlideInRight,
   useSharedValue,
   useAnimatedStyle,
   withSpring,
@@ -30,21 +29,23 @@ import Animated, {
   withDelay,
   Easing,
   interpolate,
-  runOnJS,
 } from 'react-native-reanimated';
 import { ThemedText } from '@/components/themed-text';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { apiRequest } from '@/utils/backend';
+import { shouldShowSubscriptionExpiredModal } from '@/utils/subscriptionGuard';
 import { useAuth } from '@/contexts/AuthContext';
-import { SCREEN_WIDTH, SCREEN_HEIGHT, getPadding, getFontSizes, scale } from '@/utils/responsive';
+import { SCREEN_WIDTH, SCREEN_HEIGHT, getFontSizes, scale } from '@/utils/responsive';
+import { pageTitleBlockStyles } from '@/utils/pageTitleStyles';
+import { AppLogo } from '@/components/AppLogo';
+import { StarterPlanBlockedModal } from '@/components/StarterPlanModals';
+import { parseStarterPlanFromVerify } from '@/utils/starterPlan';
 import { useTranslation } from 'react-i18next';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const padding = getPadding();
 const fontSizes = getFontSizes();
 
 const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpacity);
-const AnimatedLinearGradient = Animated.createAnimatedComponent(LinearGradient);
 
 const ADMIN_WEB_APP_URL = 'https://carsure-dz.vercel.app/';
 const ADMIN_WEB_ONLY_NOTICE_KEY = 'admin_web_only_notice';
@@ -190,7 +191,7 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
-  const [showActivationModal, setShowActivationModal] = useState(false);
+  const [showStarterBlockedModal, setShowStarterBlockedModal] = useState(false);
   const [showExpiredModal, setShowExpiredModal] = useState(false);
   const [showAdminWebModal, setShowAdminWebModal] = useState(false);
   const [showVerifyEmailModal, setShowVerifyEmailModal] = useState(false);
@@ -201,8 +202,6 @@ export default function LoginPage() {
   const [verifyInfoBanner, setVerifyInfoBanner] = useState<string | null>(null);
   const [isResending, setIsResending] = useState(false);
   const [isVerifyingCode, setIsVerifyingCode] = useState(false);
-  const [showEmailConfirmedModal, setShowEmailConfirmedModal] = useState(false);
-  const [confirmedEmailHasAccess, setConfirmedEmailHasAccess] = useState(false);
 
   const buttonScale = useSharedValue(1);
   const logoPulse = useSharedValue(1);
@@ -255,8 +254,7 @@ export default function LoginPage() {
       try { data = await response.json(); } catch { setError(t('login.serverError')); return; }
       if (!response.ok) {
         if (data.needsActivation && data.status === false) {
-          setConfirmedEmailHasAccess(false);
-          setShowEmailConfirmedModal(true);
+          setShowStarterBlockedModal(true);
           return;
         }
         setError(typeof data.message === 'string' && data.message.trim() !== '' ? data.message : t('login.loginError'));
@@ -270,6 +268,7 @@ export default function LoginPage() {
           email: (data.user as any).email,
           firstName: (data.user as any).firstName,
           lastName: (data.user as any).lastName,
+          name: (data.user as any).name,
           type: data.type as string,
           role: data.role as string,
         });
@@ -278,11 +277,9 @@ export default function LoginPage() {
           try {
             const res = await apiRequest('/abonnement/my-subscription');
             if (res.status === 401) return;
-            if (!res.ok) { setConfirmedEmailHasAccess(true); setShowEmailConfirmedModal(true); return; }
+            if (!res.ok) { router.replace('/(tabs)'); return; }
             const subData = await res.json().catch(() => null);
-            const now = Date.now();
-            const isExpired = !subData?.ok || !subData?.hasSubscription || !subData?.subscription?.date_end || new Date(subData.subscription.date_end).getTime() < now;
-            if (isExpired) {
+            if (shouldShowSubscriptionExpiredModal(subData)) {
               setShowExpiredModal(true);
               try { await apiRequest('/auth/profile', { method: 'PUT', body: JSON.stringify({ status: false }) }); } catch {}
               try { await apiRequest('/abonnement/deactivate', { method: 'POST' }); } catch {}
@@ -290,8 +287,7 @@ export default function LoginPage() {
             }
           } catch {}
         }
-        setConfirmedEmailHasAccess(true);
-        setShowEmailConfirmedModal(true);
+        router.replace('/(tabs)');
       }
     } catch { setError(t('login.cannotConnect')); }
   };
@@ -319,7 +315,7 @@ export default function LoginPage() {
           } else { setVerifyInfoBanner(null); }
           setShowVerifyEmailModal(true); setIsLoading(false); return;
         }
-        if (data.needsActivation && data.status === false) { setShowActivationModal(true); setIsLoading(false); return; }
+        if (data.needsActivation && data.status === false) { setShowStarterBlockedModal(true); setIsLoading(false); return; }
         setError(t('login.loginError')); setIsLoading(false); return;
       }
       if (data.token && data.user) {
@@ -330,6 +326,7 @@ export default function LoginPage() {
           email: (data.user as any).email,
           firstName: (data.user as any).firstName,
           lastName: (data.user as any).lastName,
+          name: (data.user as any).name,
           type: data.type as string,
           role: data.role as string,
         });
@@ -340,9 +337,7 @@ export default function LoginPage() {
             if (res.status === 401) { setIsLoading(false); return; }
             if (!res.ok) { router.replace('/(tabs)'); setIsLoading(false); return; }
             const subData = await res.json().catch(() => null);
-            const now = Date.now();
-            const isExpired = !subData?.ok || !subData?.hasSubscription || !subData?.subscription?.date_end || new Date(subData.subscription.date_end).getTime() < now;
-            if (isExpired) {
+            if (shouldShowSubscriptionExpiredModal(subData)) {
               setShowExpiredModal(true);
               try { await apiRequest('/auth/profile', { method: 'PUT', body: JSON.stringify({ status: false }) }); } catch {}
               try { await apiRequest('/abonnement/deactivate', { method: 'POST' }); } catch {}
@@ -390,7 +385,13 @@ export default function LoginPage() {
       const response = await apiRequest('/auth/verify-email', { method: 'POST', body: JSON.stringify({ email: pendingVerifyEmail.trim(), code: normalized, type: typeForApi }) });
       const data = await response.json().catch(() => ({} as Record<string, unknown>));
       if (!response.ok || data.ok !== true) { setVerifyModalError(typeof data.message === 'string' && data.message.trim() !== '' ? data.message : t('register.invalidOrExpired')); setIsVerifyingCode(false); return; }
+      const { assigned } = parseStarterPlanFromVerify(data);
       setShowVerifyEmailModal(false); setVerifyCode(''); setVerifyModalError(''); setVerifyInfoBanner(null);
+      if (!assigned) {
+        setShowStarterBlockedModal(true);
+        setIsVerifyingCode(false);
+        return;
+      }
       await completeLoginAfterEmailVerification(pendingVerifyEmail.trim(), password);
     } catch { setVerifyModalError(t('register.invalidOrExpired')); } finally { setIsVerifyingCode(false); }
   };
@@ -423,24 +424,18 @@ export default function LoginPage() {
             <View style={styles.content}>
               {/* Logo / Icon */}
               <Animated.View entering={ZoomIn.duration(700).springify()} style={styles.logoSection}>
-                <Animated.View style={[styles.logoOuter, logoAnimStyle]}>
-                  <LinearGradient
-                    colors={['#0d9488', '#14b8a6', '#2dd4bf']}
-                    style={styles.logoGradient}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                  >
-                    <IconSymbol name="car.fill" size={scale(36)} color="#ffffff" />
-                  </LinearGradient>
+                <Animated.View style={logoAnimStyle}>
+                  <AppLogo variant="auth" />
                 </Animated.View>
               </Animated.View>
 
               {/* Title */}
-              <Animated.View entering={FadeInDown.duration(600).delay(150).springify()}>
-                <ThemedText style={styles.title}>{t('auth.login')}</ThemedText>
-                <ThemedText style={styles.subtitle}>
-                  {t('login.noAccount').replace(/\s*$/, '') || 'Welcome back to CarSure'}
-                </ThemedText>
+              <Animated.View
+                entering={FadeInDown.duration(600).delay(150).springify()}
+                style={pageTitleBlockStyles.block}
+              >
+                <ThemedText style={pageTitleBlockStyles.title}>{t('auth.login')}</ThemedText>
+                <ThemedText style={pageTitleBlockStyles.subtitle}>{t('login.pageSubtitle')}</ThemedText>
               </Animated.View>
 
               {/* Form Card */}
@@ -544,24 +539,8 @@ export default function LoginPage() {
 
       {/* ──── MODALS ──── */}
 
-      {/* Activation Required */}
-      {showActivationModal && (
-        <View style={styles.modalOverlay}>
-          <Animated.View entering={ZoomIn.duration(400).springify()} style={styles.modalContent}>
-            <LinearGradient colors={['#ffffff', '#f8fafc']} style={styles.modalInner}>
-              <View style={[styles.modalIconCircle, { backgroundColor: '#fef3c7' }]}>
-                <IconSymbol name="checkmark.circle.fill" size={32} color="#f59e0b" />
-              </View>
-              <ThemedText style={styles.modalTitle}>{t('login.activationTitle')}</ThemedText>
-              <ThemedText style={styles.modalText}>{t('login.activationBody')}</ThemedText>
-              <TouchableOpacity onPress={() => setShowActivationModal(false)} style={styles.modalBtn}>
-                <LinearGradient colors={['#0d9488', '#14b8a6']} style={styles.modalBtnGradient}>
-                  <ThemedText style={styles.modalBtnText}>{t('login.activationOk')}</ThemedText>
-                </LinearGradient>
-              </TouchableOpacity>
-            </LinearGradient>
-          </Animated.View>
-        </View>
+      {showStarterBlockedModal && (
+        <StarterPlanBlockedModal onClose={() => setShowStarterBlockedModal(false)} />
       )}
 
       {/* Email Verification */}
@@ -625,30 +604,6 @@ export default function LoginPage() {
         </View>
       )}
 
-      {/* Email Confirmed */}
-      {showEmailConfirmedModal && (
-        <View style={styles.modalOverlay}>
-          <Animated.View entering={ZoomIn.duration(400).springify()} key={`confirmed-${i18n.language}`} style={styles.modalContent}>
-            <LinearGradient colors={['#ffffff', '#f8fafc']} style={styles.modalInner}>
-              <View style={[styles.modalIconCircle, { backgroundColor: confirmedEmailHasAccess ? '#dcfce7' : '#fef9c3' }]}>
-                <IconSymbol name={confirmedEmailHasAccess ? 'checkmark.circle.fill' : 'exclamationmark.triangle.fill'} size={scale(36)} color={confirmedEmailHasAccess ? '#16a34a' : '#ca8a04'} />
-              </View>
-              <ThemedText style={styles.modalTitle}>{t('login.emailConfirmedTitle')}</ThemedText>
-              <ThemedText style={styles.modalText}>{confirmedEmailHasAccess ? t('login.emailConfirmedBodyHasAccess') : t('login.emailConfirmedBodyNoAccess')}</ThemedText>
-              {confirmedEmailHasAccess ? (
-                <TouchableOpacity onPress={() => { setShowEmailConfirmedModal(false); router.replace('/(tabs)'); }} style={styles.modalBtn}>
-                  <LinearGradient colors={['#14b8a6', '#0d9488']} style={styles.modalBtnGradient}><ThemedText style={styles.modalBtnText}>{t('login.goToMySpace')}</ThemedText></LinearGradient>
-                </TouchableOpacity>
-              ) : (
-                <TouchableOpacity onPress={() => setShowEmailConfirmedModal(false)} style={styles.modalBtn}>
-                  <LinearGradient colors={['#64748b', '#475569']} style={styles.modalBtnGradient}><ThemedText style={styles.modalBtnText}>{t('login.activationOk')}</ThemedText></LinearGradient>
-                </TouchableOpacity>
-              )}
-            </LinearGradient>
-          </Animated.View>
-        </View>
-      )}
-
       {/* Admin Web Only */}
       {showAdminWebModal && (
         <View style={styles.modalOverlay}>
@@ -707,16 +662,6 @@ const styles = StyleSheet.create({
   content: { flex: 1, justifyContent: 'center', paddingHorizontal: scale(24), paddingTop: scale(20) },
 
   logoSection: { alignItems: 'center', marginBottom: scale(24) },
-  logoOuter: {
-    ...Platform.select({
-      ios: { shadowColor: '#14b8a6', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 20 },
-      android: { elevation: 12 },
-    }),
-  },
-  logoGradient: { width: scale(80), height: scale(80), borderRadius: scale(24), alignItems: 'center', justifyContent: 'center' },
-
-  title: { fontSize: fontSizes['3xl'], fontWeight: '900', color: '#0f172a', textAlign: 'center', marginBottom: scale(6), letterSpacing: 0.5 },
-  subtitle: { fontSize: fontSizes.md, color: '#64748b', textAlign: 'center', marginBottom: scale(28) },
 
   formCard: {
     borderRadius: scale(24),

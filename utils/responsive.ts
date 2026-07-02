@@ -99,6 +99,25 @@ const getFontSizes = () => ({
   '4xl': fontScale(36),
 });
 
+/** Responsive app logo size — centered, clamped for all phone/tablet widths. */
+export type AppLogoVariant = 'splash' | 'auth' | 'header';
+
+const APP_LOGO_CONFIG: Record<
+  AppLogoVariant,
+  { ratio: number; min: number; max: number }
+> = {
+  splash: { ratio: 0.36, min: 120, max: 200 },
+  auth: { ratio: 0.22, min: 72, max: 104 },
+  header: { ratio: 0.12, min: 40, max: 56 },
+};
+
+const getAppLogoSize = (variant: AppLogoVariant = 'auth'): number => {
+  const minDim = Math.min(SCREEN_WIDTH, SCREEN_HEIGHT);
+  const { ratio, min, max } = APP_LOGO_CONFIG[variant];
+  const computed = minDim * ratio;
+  return Math.round(Math.max(min, Math.min(max, computed)));
+};
+
 export {
   SCREEN_WIDTH,
   SCREEN_HEIGHT,
@@ -109,5 +128,6 @@ export {
   isTablet,
   getPadding,
   getFontSizes,
+  getAppLogoSize,
   breakpoints,
 };

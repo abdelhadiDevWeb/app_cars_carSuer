@@ -12,6 +12,23 @@
 import { DeviceEventEmitter } from 'react-native';
 import Constants from 'expo-constants';
 
+let authExpiredHandling = false;
+
+async function clearStoredAuthOnce(): Promise<void> {
+  if (authExpiredHandling) return;
+  authExpiredHandling = true;
+  try {
+    const AsyncStorageModule = await import('@react-native-async-storage/async-storage');
+    await AsyncStorageModule.default.removeItem('auth_token');
+    await AsyncStorageModule.default.removeItem('auth_user');
+    DeviceEventEmitter.emit('auth:expired');
+  } finally {
+    setTimeout(() => {
+      authExpiredHandling = false;
+    }, 2500);
+  }
+}
+
 function normalizeBackendUrl(rawUrl: string): string {
   // Remove spaces/quotes and accidental leading "=" from .env formatting mistakes.
   const trimmed = (rawUrl || '')
@@ -58,9 +75,15 @@ export function getBackendUrl(): string {
 }
 
 /**
- * Get the full image URL from a relative path
+ * Get the full image URL from a relative path.
+ * Pass `width` to request a resized WebP from the server (much faster on mobile).
  */
-export function getImageUrl(imagePath: string): string | null {
+export type ImageUrlOptions = {
+  width?: number;
+  quality?: number;
+};
+
+export function getImageUrl(imagePath: string, opts?: ImageUrlOptions): string | null {
   if (!imagePath || imagePath.trim() === '') {
     return null;
   }
@@ -79,6 +102,20 @@ export function getImageUrl(imagePath: string): string | null {
   
   // If it starts with /, it's already a path
   const cleanPath = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+
+  if (opts?.width && opts.width > 0) {
+    const useResized = process.env.EXPO_PUBLIC_USE_RESIZED_IMAGES === 'true';
+    if (!useResized) {
+      return `${getBackendUrl()}${cleanPath}`;
+    }
+    const q = opts.quality ?? 75;
+    const params = new URLSearchParams({
+      path: cleanPath,
+      w: String(Math.round(opts.width)),
+      q: String(Math.round(q)),
+    });
+    return `${getBackendUrl()}/api/media/image?${params.toString()}`;
+  }
   
   // Combine with backend URL
   return `${getBackendUrl()}${cleanPath}`;
@@ -156,18 +193,9 @@ export async function apiRequest(
       },
     });
 
-    // If the backend says auth is invalid/expired, clear local token to stop request loops.
+    // If the backend says auth is invalid/expired, clear local token once (avoid 401 storms).
     if (response.status === 401) {
-      // Always clear on auth failure to stop repeated calls with an expired JWT.
-      try {
-        const storage =
-          AsyncStorage ??
-          (await import('@react-native-async-storage/async-storage')).default;
-        await storage.removeItem('auth_token');
-        await storage.removeItem('auth_user');
-      } finally {
-        DeviceEventEmitter.emit('auth:expired');
-      }
+      void clearStoredAuthOnce();
     }
 
     return response;

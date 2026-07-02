@@ -8,14 +8,12 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
-import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
   withSpring,
   withTiming,
-  withSequence,
   withDelay,
   withRepeat,
   cancelAnimation,
@@ -30,7 +28,10 @@ import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useAuth } from '@/contexts/AuthContext';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { apiRequest } from '@/utils/backend';
+import { shouldShowSubscriptionExpiredModal } from '@/utils/subscriptionGuard';
 import { getPadding, getFontSizes, scale } from '@/utils/responsive';
+import { pageTitleBlockStyles } from '@/utils/pageTitleStyles';
+import { AppLogo } from '@/components/AppLogo';
 import { useTranslation } from 'react-i18next';
 
 const { width, height } = Dimensions.get('window');
@@ -55,7 +56,7 @@ export default function SplashScreen() {
   const buttonOpacity = useSharedValue(0);
   const backgroundRotation = useSharedValue(0);
 
-  // Visitor splash flow: show Start button after a short delay (no auto navigation).
+  // Guest: show Start button after a short delay — home only after tap.
   useEffect(() => {
     if (isLoading) return;
     if (!isAuthenticated) {
@@ -63,6 +64,7 @@ export default function SplashScreen() {
       const id = setTimeout(() => setShowStartButton(true), 600);
       return () => clearTimeout(id);
     }
+    setShowStartButton(false);
   }, [isAuthenticated, isLoading]);
 
   // Redirect if already authenticated (after subscription check for seller clients only)
@@ -96,14 +98,8 @@ export default function SplashScreen() {
           return;
         }
         const data = await res.json().catch(() => null);
-        const now = Date.now();
-        const isExpired =
-          !data?.ok ||
-          !data?.hasSubscription ||
-          !data?.subscription?.date_end ||
-          new Date(data.subscription.date_end).getTime() < now;
 
-        if (isExpired) {
+        if (shouldShowSubscriptionExpiredModal(data)) {
           setShowExpiredModal(true);
           // Best-effort server-side status updates (ignore failures)
           try {
@@ -189,15 +185,7 @@ export default function SplashScreen() {
   }, [showStartButton, buttonOpacity, buttonScale]);
 
   const handleStartPress = () => {
-    try {
-      buttonScale.value = withSequence(
-        withTiming(0.95, { duration: 100 }),
-        withSpring(1, { damping: 10, stiffness: 300 })
-      );
-      router.replace('/(tabs)');
-    } catch (error) {
-      console.error('Error navigating to tabs:', error);
-    }
+    router.replace('/(tabs)');
   };
 
   // While auth is loading, render nothing to avoid showing splash briefly for connected users.
@@ -292,32 +280,19 @@ export default function SplashScreen() {
         <Animated.View
           style={[styles.logoContainer, logoAnimatedStyle]}
         >
-          <View style={styles.logoWrapper}>
-            <Image
-              source={require('@/assets/carsure.jpeg')}
-              style={styles.logo}
-              contentFit="cover"
-              cachePolicy="memory-disk"
-              priority="high"
-              onError={(error) => {
-                console.error('Error loading logo:', error);
-              }}
-            />
-          </View>
+          <AppLogo variant="splash" />
         </Animated.View>
 
         {/* Title */}
         <Animated.View
           entering={FadeInDown.duration(800).delay(400).springify()}
-          style={[styles.titleContainer, titleAnimatedStyle]}
+          style={[styles.titleContainer, pageTitleBlockStyles.block, titleAnimatedStyle]}
         >
-          <ThemedText style={styles.title}>{t('splash.title')}</ThemedText>
-          <ThemedText style={styles.subtitle}>
-            {t('splash.subtitle')}
-          </ThemedText>
+          <ThemedText style={pageTitleBlockStyles.title}>{t('splash.title')}</ThemedText>
+          <ThemedText style={pageTitleBlockStyles.subtitle}>{t('splash.subtitle')}</ThemedText>
         </Animated.View>
 
-        {/* Start Button (visitor only) */}
+        {/* Start button (guest only — tap to open home) */}
         {!isAuthenticated && showStartButton ? (
         <AnimatedTouchableOpacity
             entering={FadeInUp.duration(700).springify()}
@@ -400,46 +375,13 @@ const styles = StyleSheet.create({
     zIndex: 1,
   },
   logoContainer: {
-    marginBottom: padding.large * 2,
+    marginBottom: scale(20),
     alignItems: 'center',
     justifyContent: 'center',
   },
-  logoWrapper: {
-    width: scale(280),
-    height: scale(280),
-    borderRadius: scale(24),
-    overflow: 'hidden',
-    backgroundColor: 'transparent',
-    shadowColor: 'transparent',
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0,
-    shadowRadius: 0,
-    elevation: 0,
-  },
-  logo: {
-    width: '100%',
-    height: '100%',
-  },
   titleContainer: {
-    alignItems: 'center',
-    marginBottom: padding.large * 2,
+    marginBottom: scale(24),
     paddingHorizontal: padding.large,
-  },
-  title: {
-    fontSize: fontSizes['3xl'],
-    fontWeight: '900',
-    color: '#0f172a',
-    textAlign: 'center',
-    marginBottom: padding.small,
-    letterSpacing: -0.5,
-  },
-  subtitle: {
-    fontSize: fontSizes.lg,
-    fontWeight: '600',
-    color: '#64748b',
-    textAlign: 'center',
-    lineHeight: fontSizes.lg * 1.5,
-    paddingHorizontal: padding.medium,
   },
   buttonContainer: {
     width: '100%',

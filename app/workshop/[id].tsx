@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   StyleSheet,
   View,
@@ -10,6 +10,7 @@ import {
   TextInput,
   Platform,
   Linking,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -18,10 +19,12 @@ import { LinearGradient } from 'expo-linear-gradient';
 import Animated, { FadeInDown, FadeIn } from 'react-native-reanimated';
 import { ThemedText } from '@/components/themed-text';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { useRouter, useLocalSearchParams, useNavigation } from 'expo-router';
+import { useRouter, useLocalSearchParams, useNavigation, useFocusEffect } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
 import { apiRequest, getImageUrl } from '@/utils/backend';
 import { getPadding, getFontSizes, scale } from '@/utils/responsive';
+import { getWorkshopTypeIcon } from '@/utils/workshopDisplay';
+import { usePullToRefresh } from '@/hooks/usePullToRefresh';
 
 const padding = getPadding();
 const fontSizes = getFontSizes();
@@ -94,122 +97,98 @@ export default function WorkshopDetailsPage() {
     });
   }, [navigation]);
 
-  useEffect(() => {
-    const fetchWorkshop = async () => {
-      try {
-        setLoading(true);
-        setError('');
-
-        // Fetch workshop data
-        const workshopRes = await apiRequest(`/workshop/${workshopId}`);
-        
-        if (!workshopRes.ok) {
-          setError("Atelier non trouvé");
-          setLoading(false);
-          return;
-        }
-
-        const workshopData = await workshopRes.json();
-        if (workshopData.ok && workshopData.workshop) {
-          setWorkshop(workshopData.workshop);
-        }
-      } catch (error) {
-        console.error('Error fetching workshop:', error);
-        setError("Erreur de connexion. Veuillez réessayer.");
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    if (workshopId) {
-      fetchWorkshop();
+  const loadRatingMeta = useCallback(async () => {
+    if (!workshopId || !user || !token || !isAuthenticated) {
+      setCanRate(false);
+      return;
     }
-  }, [workshopId]);
 
-  // Fetch rates for this workshop
-  useEffect(() => {
-    const fetchRates = async () => {
-      try {
-        setLoadingRates(true);
-        const res = await apiRequest(`/rate/workshop/${workshopId}`);
-        
-        if (res.ok) {
-          const data = await res.json();
-          if (data.ok) {
-            setRates(data.rates || []);
-            setAverageRating(data.averageRating || 0);
-            setTotalRatings(data.totalRatings || 0);
-          }
-        }
-      } catch (error) {
-        console.error('Error fetching rates:', error);
-      } finally {
-        setLoadingRates(false);
+    try {
+      const res = await apiRequest(`/rate/workshop/${workshopId}/can-rate`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.ok) setCanRate(data.canRate || false);
       }
-    };
-
-    if (workshopId) {
-      fetchRates();
+    } catch (error) {
+      console.error('Error checking if can rate:', error);
     }
-  }, [workshopId]);
 
-  // Check if user can rate this workshop
-  useEffect(() => {
-    const checkCanRate = async () => {
-      if (!user || !token || !isAuthenticated) {
-        setCanRate(false);
-        return;
-      }
-
-      try {
-        const res = await apiRequest(`/rate/workshop/${workshopId}/can-rate`, {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-          },
-        });
-        
-        if (res.ok) {
-          const data = await res.json();
-          if (data.ok) {
-            setCanRate(data.canRate || false);
-          }
+    try {
+      const res = await apiRequest(`/rate/workshop/${workshopId}/my-rate`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.ok && data.rate) {
+          setUserRate(data.rate);
+          setRatingStar(data.rate.star);
+          setRatingMessage(data.rate.message || '');
         }
-      } catch (error) {
-        console.error('Error checking if can rate:', error);
       }
-    };
-
-    // Fetch user's existing rate
-    const fetchUserRate = async () => {
-      if (!user || !token || !isAuthenticated) {
-        return;
-      }
-
-      try {
-        const res = await apiRequest(`/rate/workshop/${workshopId}/my-rate`, {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-          },
-        });
-        
-        if (res.ok) {
-          const data = await res.json();
-          if (data.ok && data.rate) {
-            setUserRate(data.rate);
-            setRatingStar(data.rate.star);
-            setRatingMessage(data.rate.message || '');
-          }
-        }
-      } catch (error) {
-        console.error('Error fetching user rate:', error);
-      }
-    };
-
-    if (workshopId && user && token && isAuthenticated) {
-      checkCanRate();
-      fetchUserRate();
+    } catch (error) {
+      console.error('Error fetching user rate:', error);
     }
   }, [workshopId, user, token, isAuthenticated]);
+
+  const loadWorkshopPageData = useCallback(async (silent = false) => {
+    if (!workshopId) return;
+
+    try {
+      if (!silent) {
+        setLoading(true);
+        setError('');
+      }
+
+      const workshopRes = await apiRequest(`/workshop/${workshopId}`);
+      if (!workshopRes.ok) {
+        setError('Atelier non trouvé');
+        return;
+      }
+
+      const workshopData = await workshopRes.json();
+      if (workshopData.ok && workshopData.workshop) {
+        setWorkshop(workshopData.workshop);
+      }
+    } catch (error) {
+      console.error('Error fetching workshop:', error);
+      setError('Erreur de connexion. Veuillez réessayer.');
+    } finally {
+      if (!silent) setLoading(false);
+    }
+
+    try {
+      if (!silent) setLoadingRates(true);
+      const res = await apiRequest(`/rate/workshop/${workshopId}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.ok) {
+          setRates(data.rates || []);
+          setAverageRating(data.averageRating || 0);
+          setTotalRatings(data.totalRatings || 0);
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching rates:', error);
+    } finally {
+      if (!silent) setLoadingRates(false);
+    }
+
+    await loadRatingMeta();
+  }, [workshopId, loadRatingMeta]);
+
+  useEffect(() => {
+    void loadWorkshopPageData(false);
+  }, [loadWorkshopPageData]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (workshop) void loadWorkshopPageData(true);
+    }, [workshop, loadWorkshopPageData])
+  );
+
+  const { refreshing, onRefresh } = usePullToRefresh(() => loadWorkshopPageData(true));
 
   const handleSubmitRate = async () => {
     if (!ratingStar || ratingStar < 1 || ratingStar > 5) {
@@ -323,6 +302,9 @@ export default function WorkshopDetailsPage() {
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0d9488" colors={['#0d9488']} />
+        }
       >
         {/* Profile Card */}
         <Animated.View
@@ -360,19 +342,25 @@ export default function WorkshopDetailsPage() {
                     </View>
                   )}
                 </View>
-                <ThemedText style={styles.email}>{workshop.email}</ThemedText>
+                <View style={styles.emailRow}>
+                  <IconSymbol name="envelope.fill" size={scale(14)} color="#64748b" />
+                  <ThemedText style={styles.email}>{workshop.email}</ThemedText>
+                </View>
                 <View style={styles.statusRow}>
                   {workshop.status ? (
                     <View style={styles.statusBadgeActive}>
+                      <IconSymbol name="checkmark.circle.fill" size={scale(14)} color="#22c55e" />
                       <ThemedText style={styles.statusBadgeText}>Atelier actif</ThemedText>
                     </View>
                   ) : (
                     <View style={styles.statusBadgePending}>
+                      <IconSymbol name="clock.fill" size={scale(14)} color="#f59e0b" />
                       <ThemedText style={styles.statusBadgeTextPending}>Atelier en attente</ThemedText>
                     </View>
                   )}
                   {workshop.type && (
                     <View style={styles.typeBadge}>
+                      <IconSymbol name={getWorkshopTypeIcon(workshop.type)} size={scale(14)} color="#3b82f6" />
                       <ThemedText style={styles.typeBadgeText}>
                         {getWorkshopTypeLabel(workshop.type)}
                       </ThemedText>
@@ -393,7 +381,10 @@ export default function WorkshopDetailsPage() {
             colors={['rgba(255, 255, 255, 0.98)', 'rgba(255, 255, 255, 0.95)']}
             style={styles.contactCardGradient}
           >
-            <ThemedText style={styles.sectionTitle}>Informations de contact</ThemedText>
+            <View style={styles.sectionTitleRow}>
+              <IconSymbol name="phone.fill" size={scale(20)} color="#0d9488" />
+              <ThemedText style={styles.sectionTitle}>Informations de contact</ThemedText>
+            </View>
             <View style={styles.contactList}>
               <TouchableOpacity
                 onPress={handlePhonePress}
@@ -437,7 +428,10 @@ export default function WorkshopDetailsPage() {
               colors={['rgba(255, 255, 255, 0.98)', 'rgba(255, 255, 255, 0.95)']}
               style={styles.pricingCardGradient}
             >
-              <ThemedText style={styles.sectionTitle}>Tarifs de visite</ThemedText>
+              <View style={styles.sectionTitleRow}>
+                <IconSymbol name="tag.fill" size={scale(20)} color="#0d9488" />
+                <ThemedText style={styles.sectionTitle}>Tarifs de visite</ThemedText>
+              </View>
               <View style={styles.pricingList}>
                 {workshop.price_visit_mec && workshop.price_visit_mec > 0 && (
                   <View style={styles.priceItem}>
@@ -480,7 +474,10 @@ export default function WorkshopDetailsPage() {
             style={styles.ratingsCardGradient}
           >
             <View style={styles.ratingsHeader}>
-              <ThemedText style={styles.sectionTitle}>Avis et notes</ThemedText>
+              <View style={styles.sectionTitleRow}>
+                <IconSymbol name="star.fill" size={scale(20)} color="#0d9488" />
+                <ThemedText style={styles.sectionTitle}>Avis et notes</ThemedText>
+              </View>
               {canRate && (
                 <TouchableOpacity
                   onPress={() => {
@@ -815,6 +812,12 @@ const styles = StyleSheet.create({
     color: '#64748b',
     marginBottom: padding.small,
   },
+  emailRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: scale(6),
+    marginTop: scale(2),
+  },
   statusRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -822,6 +825,9 @@ const styles = StyleSheet.create({
     marginTop: scale(4),
   },
   statusBadgeActive: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: scale(4),
     backgroundColor: '#dcfce7',
     paddingHorizontal: scale(12),
     paddingVertical: scale(6),
@@ -833,6 +839,9 @@ const styles = StyleSheet.create({
     color: '#22c55e',
   },
   statusBadgePending: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: scale(4),
     backgroundColor: '#fef3c7',
     paddingHorizontal: scale(12),
     paddingVertical: scale(6),
@@ -844,6 +853,9 @@ const styles = StyleSheet.create({
     color: '#f59e0b',
   },
   typeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: scale(4),
     backgroundColor: '#dbeafe',
     paddingHorizontal: scale(12),
     paddingVertical: scale(6),
@@ -862,11 +874,17 @@ const styles = StyleSheet.create({
   contactCardGradient: {
     padding: padding.large,
   },
+  sectionTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: scale(8),
+    marginBottom: padding.medium,
+  },
   sectionTitle: {
     fontSize: fontSizes.xl,
     fontWeight: '700',
     color: '#1f2937',
-    marginBottom: padding.medium,
+    marginBottom: 0,
   },
   contactList: {
     gap: padding.medium,

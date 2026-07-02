@@ -7,7 +7,6 @@ import {
   View,
   Text,
   DeviceEventEmitter,
-  AppState,
   Dimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -132,15 +131,7 @@ export default function TabLayout() {
     };
   }, []);
 
-  // Broadcast foreground event so screens can refresh data
-  useEffect(() => {
-    const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') {
-        DeviceEventEmitter.emit('appForeground');
-      }
-    });
-    return () => sub.remove();
-  }, []);
+  // appForeground is emitted from app/_layout.tsx — no duplicate AppState listener here.
 
   // Don't render tabs until auth state is loaded.
   // Keep this after hooks so hook order never changes between renders.

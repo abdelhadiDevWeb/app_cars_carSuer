@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   StyleSheet,
   View,
@@ -12,7 +12,7 @@ import {
   DeviceEventEmitter,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRouter, useLocalSearchParams, useNavigation } from 'expo-router';
+import { useRouter, useLocalSearchParams, useNavigation, useFocusEffect } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -25,7 +25,14 @@ import { useNotifications } from '@/hooks/useNotifications';
 import { useTranslation } from 'react-i18next';
 import { apiRequest, getImageUrl, getBackendUrl } from '@/utils/backend';
 import { getPadding, getFontSizes, scale } from '@/utils/responsive';
+import { pageTitleBlockStyles } from '@/utils/pageTitleStyles';
+import { usePullToRefresh } from '@/hooks/usePullToRefresh';
 import { io, Socket } from 'socket.io-client';
+import {
+  consumePendingChatOpenUserId,
+  peekPendingChatOpenUserId,
+} from '@/utils/pendingChatOpen';
+import { getUserIdString } from '@/utils/openChatWithUser';
 
 const padding = getPadding();
 const fontSizes = getFontSizes();
@@ -75,11 +82,49 @@ interface Message {
   createdAt: string;
 }
 
+function getParamUserId(raw: string | string[] | undefined): string | null {
+  if (!raw) return null;
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return value ? String(value) : null;
+}
+
+function buildChatFromGetOrCreateResponse(
+  data: {
+    chat: {
+      id: string;
+      id_user1: { id: string; firstName?: string; lastName?: string; email?: string; profileImage?: string | null };
+      id_user2: { id: string; firstName?: string; lastName?: string; email?: string; profileImage?: string | null };
+      updatedAt?: string;
+    };
+  },
+  otherUserId: string,
+  myId: string,
+): Chat {
+  const u1 = data.chat.id_user1;
+  const u2 = data.chat.id_user2;
+  const otherUser =
+    String(u1.id) === myId ? u2 : String(u2.id) === myId ? u1 : String(u1.id) === otherUserId ? u1 : u2;
+
+  return {
+    id: String(data.chat.id),
+    otherUser: {
+      id: String(otherUser?.id || otherUserId),
+      firstName: otherUser?.firstName || '',
+      lastName: otherUser?.lastName || '',
+      email: otherUser?.email || '',
+      profileImage: otherUser?.profileImage || undefined,
+    },
+    lastMessage: null,
+    unreadCount: 0,
+    updatedAt: data.chat.updatedAt || new Date().toISOString(),
+  };
+}
+
 export default function ChatScreen() {
   const { t } = useTranslation();
-  const { isAuthenticated, user } = useAuth();
+  const { isAuthenticated, isLoading: authLoading, user, token } = useAuth();
   const { setIsViewingChat } = useChat();
-  const { fetchNotifications, markChatMessagesAsRead, markMessageNotificationsAsReadForUser } = useNotifications();
+  const { markChatMessagesAsRead, markMessageNotificationsAsReadForUser } = useNotifications();
   const router = useRouter();
   const navigation = useNavigation();
   const params = useLocalSearchParams();
@@ -87,7 +132,6 @@ export default function ChatScreen() {
   const [chats, setChats] = useState<Chat[]>([]);
   const chatsRef = useRef<Chat[]>([]);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [loadingMessages, setLoadingMessages] = useState(false);
@@ -98,8 +142,74 @@ export default function ChatScreen() {
   const messagesEndRef = useRef<ScrollView>(null);
   const socketRef = useRef<Socket | null>(null);
   const currentChatIdRef = useRef<string | null>(null);
-  const isMarkingReadRef = useRef<boolean>(false);
+  const currentOtherUserIdRef = useRef<string | null>(null);
   const lastMarkedChatIdRef = useRef<string | null>(null);
+  const openingUserIdRef = useRef<string | null>(null);
+  const messagesRef = useRef<Message[]>([]);
+  const lastMessagesFetchRef = useRef(0);
+  const handleChatPressRef = useRef<(chat: Chat, opts?: { force?: boolean }) => Promise<void>>(async () => {});
+  const openConversationWithUserRef = useRef<(otherUserId: string) => Promise<void>>(async () => {});
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
+    currentOtherUserIdRef.current = currentChat?.otherUser?.id
+      ? String(currentChat.otherUser.id)
+      : null;
+  }, [currentChat?.otherUser?.id]);
+
+  const getCurrentUserId = useCallback(() => {
+    return String(user?._id || (user as { id?: string })?.id || '');
+  }, [user]);
+
+  const fetchUserImages = useCallback(async (chatsList: Chat[]) => {
+    const imagesMap: Record<string, string> = {};
+    const userIds = chatsList.map((chat) => chat.otherUser.id).filter(Boolean);
+
+    await Promise.all(
+      userIds.map(async (userId) => {
+        try {
+          const response = await apiRequest(`/user-image/${userId}`);
+          if (response.ok) {
+            const data = await response.json();
+            if (data.ok && data.userImage?.image) {
+              imagesMap[userId] = getImageUrl(data.userImage.image) || '';
+            }
+          }
+        } catch (error) {
+          console.error(`Error fetching image for user ${userId}:`, error);
+        }
+      })
+    );
+
+    setUserImages(imagesMap);
+  }, []);
+
+  const fetchChats = useCallback(async (silent = false) => {
+    try {
+      if (!silent) setLoading(true);
+      const response = await apiRequest('/chat/my-chats');
+      const data = await response.json().catch(() => null);
+      if (response.ok && data?.ok && Array.isArray(data.chats)) {
+        setChats(data.chats);
+        void fetchUserImages(data.chats);
+      } else if (!response.ok) {
+        console.error('Failed to fetch chats:', data?.message || response.status);
+      }
+    } catch (error) {
+      console.error('Error fetching chats:', error);
+    } finally {
+      if (!silent) setLoading(false);
+    }
+  }, [fetchUserImages]);
+
+  const refreshChatsList = useCallback(async () => {
+    await fetchChats(true);
+  }, [fetchChats]);
+
+  const { refreshing, onRefresh } = usePullToRefresh(refreshChatsList);
 
   // Update chat list directly when receiving a new message via socket
   const updateChatWithNewMessage = (messageData: any) => {
@@ -155,6 +265,7 @@ export default function ChatScreen() {
       
       updatedChats[chatIndex] = {
         ...chat,
+        id: messageData.id_Chat ? String(messageData.id_Chat) : chat.id,
         lastMessage: {
           id: messageData.id,
           message: messageData.message,
@@ -187,10 +298,11 @@ export default function ChatScreen() {
   };
 
   useEffect(() => {
+    if (authLoading) return;
     if (!isAuthenticated) {
       router.replace('/(tabs)');
     }
-  }, [isAuthenticated]);
+  }, [authLoading, isAuthenticated, router]);
 
   // Keep ref in sync with state
   useEffect(() => {
@@ -212,6 +324,7 @@ export default function ChatScreen() {
     const backendUrl = getBackendUrl();
     const socket = io(backendUrl, {
       transports: ['websocket', 'polling'],
+      auth: token ? { token } : undefined,
     });
 
     socket.on('connect', () => {
@@ -227,10 +340,24 @@ export default function ChatScreen() {
       
       // Update the chat list directly without refreshing
       updateChatWithNewMessage(data);
-      
-      // Check if this message is for the current chat
-      if (currentChatIdRef.current && data.id_Chat === currentChatIdRef.current) {
-        // Check if message already exists
+
+      const senderId = typeof data.id_sender === 'object'
+        ? String(data.id_sender.id || data.id_sender._id || '')
+        : String(data.id_sender || '');
+      const receiverId = typeof data.id_reciver === 'object'
+        ? String(data.id_reciver.id || data.id_reciver._id || '')
+        : String(data.id_reciver || '');
+      const openOtherUserId = currentOtherUserIdRef.current;
+      const isOpenConversation =
+        !!openOtherUserId &&
+        (senderId === openOtherUserId || receiverId === openOtherUserId);
+
+      if (isOpenConversation) {
+        if (data.id_Chat && String(data.id_Chat) !== String(currentChatIdRef.current)) {
+          currentChatIdRef.current = String(data.id_Chat);
+          setSelectedChatId(String(data.id_Chat));
+        }
+
         setMessages((prev) => {
           const exists = prev.some((m) => m.id === data.id);
           if (exists) return prev;
@@ -367,12 +494,10 @@ export default function ChatScreen() {
         socketRef.current = null;
       }
     };
-  }, [isAuthenticated, user]);
+  }, [isAuthenticated, user, token]);
 
   useEffect(() => {
     if (isAuthenticated) {
-      fetchChats();
-      
       // Listen for refresh event from NotificationBanner to update badge in real-time
       const subscription = DeviceEventEmitter.addListener(
         'refreshChats',
@@ -384,18 +509,147 @@ export default function ChatScreen() {
             return;
           }
           // Fallback: refresh from backend only when payload is missing.
-          fetchChats();
+          void fetchChats(true);
         }
       );
-      
+
       return () => {
         subscription.remove();
       };
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, fetchChats]);
 
-  // Keep tab bar visible consistently - don't hide it
-  // The tab bar should maintain the same size across all pages
+  useFocusEffect(
+    useCallback(() => {
+      if (authLoading || !isAuthenticated) return;
+      if (selectedChatId && currentChat) {
+        const now = Date.now();
+        const shouldReload =
+          messagesRef.current.length === 0 || now - lastMessagesFetchRef.current > 5000;
+        if (shouldReload) {
+          void handleChatPressRef.current(
+            { ...currentChat, id: selectedChatId },
+            { force: true, silent: true },
+          );
+        }
+        return;
+      }
+      void fetchChats(chats.length === 0 ? false : true);
+    }, [authLoading, isAuthenticated, selectedChatId, currentChat, fetchChats, chats.length]),
+  );
+
+  const fetchMessagesForChat = useCallback(
+    async (chat: Chat, opts?: { force?: boolean; silent?: boolean }) => {
+      const chatId = String(chat.id);
+      const otherUserId = String(chat.otherUser.id);
+      const force = opts?.force ?? false;
+      const silent = opts?.silent ?? false;
+
+      if (
+        !force &&
+        selectedChatId === chatId &&
+        currentChatIdRef.current === chatId &&
+        messagesRef.current.length > 0 &&
+        !loadingMessages
+      ) {
+        return;
+      }
+
+      if (!silent) {
+        setSelectedChatId(chatId);
+        setCurrentChat(chat);
+        setMessages([]);
+        setLoadingMessages(true);
+      }
+
+      currentChatIdRef.current = chatId;
+      lastMarkedChatIdRef.current = chatId;
+      lastMessagesFetchRef.current = Date.now();
+
+      setChats((prevChats) => {
+        const updated = prevChats.map((c) =>
+          String(c.id) === chatId || String(c.otherUser.id) === otherUserId
+            ? { ...c, unreadCount: 0 }
+            : c,
+        );
+        chatsRef.current = updated;
+        return updated;
+      });
+
+      void markChatMessagesAsRead?.(otherUserId);
+
+      try {
+        let serverChatId = chatId;
+        let loadedMessages: Message[] = [];
+
+        const messagesRes = await apiRequest(`/chat/${encodeURIComponent(chatId)}/messages`);
+        const messagesData = await messagesRes.json().catch(() => null);
+
+        if (messagesRes.ok && messagesData?.ok) {
+          loadedMessages = Array.isArray(messagesData.messages) ? messagesData.messages : [];
+        }
+
+        const needsFallback =
+          loadedMessages.length === 0 &&
+          (!messagesRes.ok || chat.lastMessage || messagesRes.status === 404);
+
+        if (needsFallback) {
+          const createRes = await apiRequest('/chat/get-or-create', {
+            method: 'POST',
+            body: JSON.stringify({ otherUserId }),
+          });
+          const createData = await createRes.json().catch(() => null);
+          if (createRes.ok && createData?.ok && createData.chat) {
+            serverChatId = String(createData.chat.id);
+            loadedMessages = Array.isArray(createData.messages) ? createData.messages : [];
+          } else if (!messagesRes.ok) {
+            console.error(
+              'Failed to load chat messages:',
+              createData?.message || messagesData?.message || messagesRes.status,
+            );
+            if (!silent) setMessages([]);
+            return;
+          }
+        }
+
+        currentChatIdRef.current = serverChatId;
+        if (!silent) {
+          setSelectedChatId(serverChatId);
+          setCurrentChat((prevChat) =>
+            prevChat
+              ? { ...prevChat, id: serverChatId, unreadCount: 0 }
+              : { ...chat, id: serverChatId, unreadCount: 0 },
+          );
+        }
+        setMessages(loadedMessages);
+
+        if (serverChatId !== chatId) {
+          setChats((prevChats) =>
+            prevChats.map((c) =>
+              String(c.otherUser.id) === otherUserId
+                ? { ...c, id: serverChatId, unreadCount: 0 }
+                : c,
+            ),
+          );
+        }
+
+        setTimeout(() => {
+          messagesEndRef.current?.scrollToEnd({ animated: !silent });
+        }, 50);
+      } catch (error) {
+        console.error('Error fetching messages:', error);
+        if (!silent) setMessages([]);
+      } finally {
+        if (!silent) setLoadingMessages(false);
+      }
+    },
+    [loadingMessages, markChatMessagesAsRead, selectedChatId],
+  );
+
+  const handleChatPress = async (chat: Chat, opts?: { force?: boolean; silent?: boolean }) => {
+    await fetchMessagesForChat(chat, opts);
+  };
+  handleChatPressRef.current = handleChatPress;
 
   // Update chat context when viewing a chat
   useEffect(() => {
@@ -417,182 +671,114 @@ export default function ChatScreen() {
     };
   }, [selectedChatId, currentChat, setIsViewingChat]);
 
-  // Check if userId param is provided to open a specific chat
-  useEffect(() => {
-    if (params.userId && chats.length > 0) {
-      const chat = chats.find(c => c.otherUser.id === params.userId);
-      if (chat) {
-        handleChatPress(chat);
+  const openConversationWithUser = useCallback(
+    async (otherUserId: string) => {
+      const normalizedId = String(otherUserId);
+      const myId = getCurrentUserId();
+      if (!myId || myId === normalizedId) return;
+
+      if (
+        selectedChatId &&
+        currentChat &&
+        String(currentChat.otherUser.id) === normalizedId &&
+        messagesRef.current.length > 0
+      ) {
+        return;
       }
-    }
-  }, [params.userId, chats]);
 
-  const fetchChats = async () => {
-    try {
-      setLoading(true);
-      const response = await apiRequest('/chat/my-chats');
-      if (response.ok) {
-        const data = await response.json();
-        if (data.ok && data.chats) {
-          setChats(data.chats);
-          // Fetch user images for all other users
-          fetchUserImages(data.chats);
-        }
+      const existing = chats.find((c) => String(c.otherUser.id) === normalizedId);
+      if (existing) {
+        await handleChatPressRef.current(existing);
+        return;
       }
-    } catch (error) {
-      console.error('Error fetching chats:', error);
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  };
 
-  const fetchUserImages = async (chatsList: Chat[]) => {
-    const imagesMap: Record<string, string> = {};
-    const userIds = chatsList.map(chat => chat.otherUser.id).filter(Boolean);
+      setLoadingMessages(true);
+      setSelectedChatId(null);
+      setCurrentChat(null);
+      setMessages([]);
 
-    await Promise.all(
-      userIds.map(async (userId) => {
-        try {
-          const response = await apiRequest(`/user-image/${userId}`);
-          if (response.ok) {
-            const data = await response.json();
-            if (data.ok && data.userImage?.image) {
-              imagesMap[userId] = getImageUrl(data.userImage.image) || '';
-            }
-          }
-        } catch (error) {
-          console.error(`Error fetching image for user ${userId}:`, error);
+      try {
+        const response = await apiRequest('/chat/get-or-create', {
+          method: 'POST',
+          body: JSON.stringify({ otherUserId: normalizedId }),
+        });
+        const data = await response.json().catch(() => null);
+        if (!response.ok || !data?.ok || !data?.chat) {
+          console.error('Failed to open chat:', data?.message || response.status);
+          return;
         }
-      })
+
+        const serverChatId = String(data.chat.id);
+        const loadedMessages = Array.isArray(data.messages) ? data.messages : [];
+        const chat = buildChatFromGetOrCreateResponse(data, normalizedId, myId);
+        currentChatIdRef.current = serverChatId;
+        lastMarkedChatIdRef.current = serverChatId;
+
+        setChats((prev) => {
+          const withoutDuplicate = prev.filter(
+            (c) => String(c.otherUser.id) !== normalizedId,
+          );
+          return [{ ...chat, id: serverChatId }, ...withoutDuplicate];
+        });
+        void fetchUserImages([{ ...chat, id: serverChatId }]);
+
+        setSelectedChatId(serverChatId);
+        setCurrentChat({ ...chat, id: serverChatId });
+        setMessages(loadedMessages);
+
+        void markChatMessagesAsRead?.(normalizedId);
+
+        setTimeout(() => {
+          messagesEndRef.current?.scrollToEnd({ animated: true });
+        }, 50);
+      } catch (error) {
+        console.error('Error opening chat with user:', error);
+      } finally {
+        setLoadingMessages(false);
+      }
+    },
+    [
+      chats,
+      currentChat,
+      selectedChatId,
+      getCurrentUserId,
+      fetchUserImages,
+      markChatMessagesAsRead,
+    ],
+  );
+  openConversationWithUserRef.current = openConversationWithUser;
+
+  const resolveIncomingOpenUserId = useCallback((): string | null => {
+    return (
+      getParamUserId(params.userId as string | string[] | undefined) ||
+      peekPendingChatOpenUserId()
     );
+  }, [params.userId]);
 
-    setUserImages(imagesMap);
-  };
+  const tryOpenRequestedConversation = useCallback(async () => {
+    const targetUserId = resolveIncomingOpenUserId();
+    if (!targetUserId || !isAuthenticated || !user || !token) return;
+    if (openingUserIdRef.current === targetUserId) return;
 
-  const handleChatPress = async (chat: Chat) => {
-    // Prevent duplicate calls for the same chat
-    if (selectedChatId === chat.id || isMarkingReadRef.current) {
-      return;
-    }
-
-    setSelectedChatId(chat.id);
-    setCurrentChat(chat);
-    setLoadingMessages(true);
-    isMarkingReadRef.current = true;
-    const previousChatId = lastMarkedChatIdRef.current;
-    lastMarkedChatIdRef.current = chat.id;
-
+    openingUserIdRef.current = targetUserId;
     try {
-      // Mark chat notifications as read when entering chat (only once per chat)
-      if (previousChatId !== chat.id) {
-        try {
-          // Update chat list FIRST to immediately update the badge
-          setChats((prevChats) => {
-            const updated = prevChats.map((c) =>
-              c.id === chat.id || c.otherUser.id === chat.otherUser.id
-                ? { ...c, unreadCount: 0 }
-                : c
-            );
-            
-            // Store in ref for event emission
-            chatsRef.current = updated;
-            
-            // Emit event after state update (using setTimeout to avoid render cycle)
-            setTimeout(() => {
-              DeviceEventEmitter.emit('refreshChats', chatsRef.current);
-            }, 0);
-            
-            return updated;
-          });
-          
-          // Use the hook method which does optimistic update + API call
-          if (markChatMessagesAsRead) {
-            await markChatMessagesAsRead(chat.otherUser.id);
-          }
-        } catch (error) {
-          console.error('Error marking chat notifications as read:', error);
-        }
-      }
-
-      const response = await apiRequest('/chat/get-or-create', {
-        method: 'POST',
-        body: JSON.stringify({ otherUserId: chat.otherUser.id }),
-      });
-
-      if (response.ok) {
-        const data = await response.json();
-        if (data.ok && data.chat && data.messages) {
-          // Store current chat ID for socket filtering
-          currentChatIdRef.current = data.chat.id;
-          
-          setMessages(data.messages);
-          
-          // Mark messages as read (only once)
-          if (!data.messages.some((msg: Message) => !msg.read)) {
-            // All messages already read, skip API call
-            isMarkingReadRef.current = false;
-          } else {
-            try {
-              // Update chat list FIRST to immediately update the Messages page header badge
-              setChats((prevChats) => {
-                const updated = prevChats.map((c) =>
-                  c.id === chat.id || c.otherUser.id === chat.otherUser.id
-                    ? { ...c, unreadCount: 0 }
-                    : c
-                );
-                
-                // Store in ref for event emission
-                chatsRef.current = updated;
-                
-                // Emit event after state update (using setTimeout to avoid render cycle)
-                setTimeout(() => {
-                  DeviceEventEmitter.emit('refreshChats', chatsRef.current);
-                }, 0);
-                
-                return updated;
-              });
-              
-              // Also update currentChat state
-              setCurrentChat((prevChat) =>
-                prevChat ? { ...prevChat, unreadCount: 0 } : prevChat
-              );
-              
-              await apiRequest(`/chat/${data.chat.id}/mark-read`, {
-                method: 'PUT',
-              });
-              
-              // Update local messages state to mark all unread messages as read
-              setMessages((prevMessages) =>
-                prevMessages.map((msg) => ({
-                  ...msg,
-                  read: true,
-                }))
-              );
-              
-              // Refresh notifications to update the Messages tab badge immediately
-              if (fetchNotifications) {
-                await fetchNotifications();
-              }
-            } catch (error) {
-              console.error('Error marking messages as read:', error);
-            } finally {
-              isMarkingReadRef.current = false;
-            }
-          }
-          
-          // Scroll to bottom after messages load
-          setTimeout(() => {
-            messagesEndRef.current?.scrollToEnd({ animated: true });
-          }, 100);
-        }
-      }
-    } catch (error) {
-      console.error('Error fetching messages:', error);
+      await openConversationWithUserRef.current(targetUserId);
     } finally {
-      setLoadingMessages(false);
+      openingUserIdRef.current = null;
+      consumePendingChatOpenUserId();
+      router.setParams({ userId: '' });
     }
-  };
+  }, [resolveIncomingOpenUserId, isAuthenticated, user, token, router]);
+
+  useEffect(() => {
+    void tryOpenRequestedConversation();
+  }, [tryOpenRequestedConversation]);
+
+  useFocusEffect(
+    useCallback(() => {
+      void tryOpenRequestedConversation();
+    }, [tryOpenRequestedConversation]),
+  );
 
   const handleSendMessage = async () => {
     if (!newMessage.trim() || !currentChat || sendingMessage) return;
@@ -688,6 +874,16 @@ export default function ChatScreen() {
     }
   };
 
+  if (authLoading) {
+    return (
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+          <ActivityIndicator size="large" color="#0d9488" />
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   if (!isAuthenticated) {
     return null;
   }
@@ -705,23 +901,26 @@ export default function ChatScreen() {
             colors={['rgba(255, 255, 255, 0.98)', 'rgba(255, 255, 255, 0.95)']}
             style={styles.headerGradient}
           >
-            <View style={styles.headerTitleContainer}>
-              <ThemedText style={styles.headerTitle}>{t('tabs.messages')}</ThemedText>
-              {(() => {
-                // Count chats with unread messages (show 1 per chat, not total count)
-                const chatsWithUnread = chats.filter((chat) => (chat.unreadCount || 0) > 0).length;
-                return chatsWithUnread > 0 ? (
-                  <View style={styles.headerBadge}>
-                    <ThemedText style={styles.headerBadgeText}>
-                      {chatsWithUnread > 9 ? '9+' : chatsWithUnread}
-                    </ThemedText>
-                  </View>
-                ) : null;
-              })()}
+            <View style={pageTitleBlockStyles.block}>
+              <View style={styles.headerTitleContainer}>
+                <ThemedText style={[pageTitleBlockStyles.cardTitle, styles.headerTitleInRow]}>
+                  {t('tabs.messages')}
+                </ThemedText>
+                {(() => {
+                  const chatsWithUnread = chats.filter((chat) => (chat.unreadCount || 0) > 0).length;
+                  return chatsWithUnread > 0 ? (
+                    <View style={styles.headerBadge}>
+                      <ThemedText style={styles.headerBadgeText}>
+                        {chatsWithUnread > 9 ? '9+' : chatsWithUnread}
+                      </ThemedText>
+                    </View>
+                  ) : null;
+                })()}
+              </View>
+              <ThemedText style={pageTitleBlockStyles.cardSubtitle}>
+                {t('chat.conversationsCount', { count: chats.length })}
+              </ThemedText>
             </View>
-            <ThemedText style={styles.headerSubtitle}>
-              {t('chat.conversationsCount', { count: chats.length })}
-            </ThemedText>
           </LinearGradient>
         </Animated.View>
 
@@ -754,10 +953,8 @@ export default function ChatScreen() {
             refreshControl={
               <RefreshControl
                 refreshing={refreshing}
-                onRefresh={() => {
-                  setRefreshing(true);
-                  fetchChats();
-                }}
+                onRefresh={onRefresh}
+                tintColor="#0d9488"
                 colors={['#0d9488']}
               />
             }
@@ -877,7 +1074,7 @@ export default function ChatScreen() {
                 </TouchableOpacity>
                 <TouchableOpacity
                   onPress={() => {
-                    const otherUserId = currentChat.otherUser.id;
+                    const otherUserId = getUserIdString(currentChat.otherUser.id);
                     if (otherUserId) {
                       router.push(`/user/${otherUserId}` as any);
                     }
@@ -1040,17 +1237,19 @@ const styles = StyleSheet.create({
   headerGradient: {
     padding: padding.large,
     alignItems: 'center',
+    width: '100%',
   },
   headerTitleContainer: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    flexWrap: 'wrap',
     gap: scale(8),
-    marginBottom: padding.small,
+    width: '100%',
   },
-  headerTitle: {
-    fontSize: fontSizes['3xl'],
-    fontWeight: '900',
-    color: '#1f2937',
+  headerTitleInRow: {
+    marginBottom: 0,
+    flexShrink: 1,
   },
   headerBadge: {
     backgroundColor: '#ef4444',
@@ -1082,10 +1281,6 @@ const styles = StyleSheet.create({
     lineHeight: fontSizes.xs,
     includeFontPadding: false,
     textAlignVertical: 'center',
-  },
-  headerSubtitle: {
-    fontSize: fontSizes.sm,
-    color: '#64748b',
   },
   loadingContainer: {
     flex: 1,

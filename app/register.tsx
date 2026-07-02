@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   StyleSheet,
   View,
@@ -31,10 +31,14 @@ import Animated, {
 import { ThemedText } from '@/components/themed-text';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { apiRequest } from '@/utils/backend';
-import { SCREEN_WIDTH, SCREEN_HEIGHT, getPadding, getFontSizes, scale } from '@/utils/responsive';
+import { SCREEN_WIDTH, SCREEN_HEIGHT, getFontSizes, scale } from '@/utils/responsive';
+import { pageTitleBlockStyles } from '@/utils/pageTitleStyles';
+import { AppLogo } from '@/components/AppLogo';
+import { StarterPlanBlockedModal } from '@/components/StarterPlanModals';
+import { useAuth } from '@/contexts/AuthContext';
+import { parseStarterPlanFromVerify } from '@/utils/starterPlan';
 import { useTranslation } from 'react-i18next';
 
-const padding = getPadding();
 const fontSizes = getFontSizes();
 
 const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpacity);
@@ -140,8 +144,10 @@ type RegisterType = 'client';
 
 export default function RegisterPage() {
   const router = useRouter();
+  const { login } = useAuth();
   const { t } = useTranslation();
   const registerAs: RegisterType = 'client';
+  const passwordRef = useRef('');
   const [showVerification, setShowVerification] = useState(false);
   const [verificationEmail, setVerificationEmail] = useState('');
   const [verificationCode, setVerificationCode] = useState('');
@@ -149,7 +155,7 @@ export default function RegisterPage() {
   const [isVerifying, setIsVerifying] = useState(false);
   const [timeLeft, setTimeLeft] = useState(15 * 60);
   const [codeError, setCodeError] = useState('');
-  const [showSuccessModal, setShowSuccessModal] = useState(false);
+  const [showStarterBlockedModal, setShowStarterBlockedModal] = useState(false);
   const [formError, setFormError] = useState('');
   const [formErrors, setFormErrors] = useState<string[]>([]);
   const [userData, setUserData] = useState({ firstName: '', lastName: '', email: '', phone: '', password: '', confirmPassword: '' });
@@ -199,6 +205,7 @@ export default function RegisterPage() {
       let data;
       try { data = await response.json(); } catch { setFormError(t('login.serverError')); setIsSubmitting(false); return; }
       if (!response.ok) { setFormError(t('register.registerError')); setIsSubmitting(false); return; }
+      passwordRef.current = userData.password;
       setVerificationEmail(userData.email);
       setUserData({ firstName: '', lastName: '', email: '', phone: '', password: '', confirmPassword: '' });
       setTimeLeft(15 * 60); setVerificationCode(''); setCodeError(''); setIsSubmitting(false); setShowVerification(true);
@@ -218,9 +225,47 @@ export default function RegisterPage() {
       let data;
       try { data = await response.json(); } catch { setCodeError(t('login.serverError')); setIsVerifying(false); return; }
       if (!response.ok) { setCodeError(t('register.invalidOrExpired')); setIsVerifying(false); return; }
-      if (data.ok === true) { setVerificationCode(''); setShowVerification(false); setShowSuccessModal(true); }
-      else { setCodeError(t('register.verifyError')); }
+      if (data.ok !== true) { setCodeError(t('register.verifyError')); setIsVerifying(false); return; }
+
+      const { assigned } = parseStarterPlanFromVerify(data);
+      if (!assigned) {
+        setVerificationCode('');
+        setShowVerification(false);
+        setShowStarterBlockedModal(true);
+        setIsVerifying(false);
+        return;
+      }
+
+      const loginRes = await apiRequest('/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({
+          email: verificationEmail.trim(),
+          password: passwordRef.current,
+        }),
+      });
+      const loginData = await loginRes.json().catch(() => null);
+      if (!loginRes.ok || !loginData?.token || !loginData?.user) {
+        setVerificationCode('');
+        setShowVerification(false);
+        setIsVerifying(false);
+        router.push('/login');
+        return;
+      }
+
+      await login(loginData.token as string, {
+        _id: loginData.user._id || loginData.user.id,
+        email: loginData.user.email,
+        firstName: loginData.user.firstName,
+        lastName: loginData.user.lastName,
+        type: loginData.type as string,
+        role: loginData.role as string,
+      });
+
+      passwordRef.current = '';
+      setVerificationCode('');
+      setShowVerification(false);
       setIsVerifying(false);
+      router.replace('/(tabs)');
     } catch { setCodeError(t('register.cannotConnect')); setIsVerifying(false); }
   };
 
@@ -239,15 +284,27 @@ export default function RegisterPage() {
               <View style={styles.content}>
                 {/* Header */}
                 <Animated.View entering={ZoomIn.duration(600).springify()} style={styles.verifyIconWrap}>
-                  <LinearGradient colors={['#10b981', '#34d399']} style={styles.verifyIconGradient}>
-                    <IconSymbol name="envelope.fill" size={scale(30)} color="#ffffff" />
-                  </LinearGradient>
+                  <Animated.View style={logoAnimStyle}>
+                    <AppLogo variant="auth" />
+                  </Animated.View>
                 </Animated.View>
 
-                <Animated.View entering={FadeInDown.duration(500).delay(100).springify()}>
-                  <ThemedText style={styles.verifyTitle}>{t('register.verifyCheckEmail')}</ThemedText>
-                  <ThemedText style={styles.verifySubtitle}>{t('register.verifySentTo')}</ThemedText>
+                <Animated.View
+                  entering={FadeInDown.duration(500).delay(100).springify()}
+                  style={pageTitleBlockStyles.block}
+                >
+                  <ThemedText style={pageTitleBlockStyles.title}>{t('register.verifyCheckEmail')}</ThemedText>
+                  <ThemedText style={pageTitleBlockStyles.subtitle}>{t('register.verifySentTo')}</ThemedText>
                   <ThemedText style={styles.verifyEmailText}>{verificationEmail}</ThemedText>
+                </Animated.View>
+
+                <Animated.View entering={FadeIn.duration(500).delay(150)}>
+                  <View style={styles.spamNoteBox}>
+                    <View style={styles.spamNoteIconWrap}>
+                      <IconSymbol name="exclamationmark.triangle.fill" size={18} color="#d97706" />
+                    </View>
+                    <ThemedText style={styles.spamNoteText}>{t('register.verifySpamHint')}</ThemedText>
+                  </View>
                 </Animated.View>
 
                 {/* Timer */}
@@ -313,6 +370,14 @@ export default function RegisterPage() {
             </ScrollView>
           </KeyboardAvoidingView>
         </SafeAreaView>
+        {showStarterBlockedModal && (
+          <StarterPlanBlockedModal
+            onClose={() => {
+              setShowStarterBlockedModal(false);
+              router.push('/login');
+            }}
+          />
+        )}
       </View>
     );
   }
@@ -332,17 +397,18 @@ export default function RegisterPage() {
             <View style={styles.content}>
               {/* Logo */}
               <Animated.View entering={ZoomIn.duration(700).springify()} style={styles.logoSection}>
-                <Animated.View style={[styles.logoOuter, logoAnimStyle]}>
-                  <LinearGradient colors={['#0d9488', '#14b8a6', '#2dd4bf']} style={styles.logoGradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }}>
-                    <IconSymbol name="person.badge.plus" size={scale(34)} color="#ffffff" />
-                  </LinearGradient>
+                <Animated.View style={logoAnimStyle}>
+                  <AppLogo variant="auth" />
                 </Animated.View>
               </Animated.View>
 
               {/* Title */}
-              <Animated.View entering={FadeInDown.duration(600).delay(150).springify()}>
-                <ThemedText style={styles.title}>{t('auth.register')}</ThemedText>
-                <ThemedText style={styles.subtitle}>{t('register.alreadyHaveAccount').replace(/\s*$/, '') || 'Create your CarSure account'}</ThemedText>
+              <Animated.View
+                entering={FadeInDown.duration(600).delay(150).springify()}
+                style={pageTitleBlockStyles.block}
+              >
+                <ThemedText style={pageTitleBlockStyles.title}>{t('auth.register')}</ThemedText>
+                <ThemedText style={pageTitleBlockStyles.subtitle}>{t('register.pageSubtitle')}</ThemedText>
               </Animated.View>
 
               {/* Form Card */}
@@ -440,27 +506,13 @@ export default function RegisterPage() {
         </KeyboardAvoidingView>
       </SafeAreaView>
 
-      {/* Success Modal */}
-      {showSuccessModal && (
-        <View style={styles.modalOverlay}>
-          <Animated.View entering={ZoomIn.duration(400).springify()} style={styles.modalContent}>
-            <LinearGradient colors={['#ffffff', '#f0fdf4']} style={styles.modalInner}>
-              <View style={styles.successIconCircle}>
-                <LinearGradient colors={['#10b981', '#34d399']} style={styles.successIconGradient}>
-                  <IconSymbol name="checkmark" size={scale(32)} color="#ffffff" />
-                </LinearGradient>
-              </View>
-              <ThemedText style={styles.modalTitle}>{t('register.successTitle')}</ThemedText>
-              <ThemedText style={styles.modalText}>{t('register.successVerifiedBody')}</ThemedText>
-              <TouchableOpacity onPress={() => { setShowSuccessModal(false); router.push('/login'); }} style={styles.modalBtn}>
-                <LinearGradient colors={['#0d9488', '#14b8a6']} style={styles.modalBtnGradient}>
-                  <ThemedText style={styles.modalBtnText}>{t('register.goToLogin')}</ThemedText>
-                  <IconSymbol name="arrow.right" size={16} color="#ffffff" />
-                </LinearGradient>
-              </TouchableOpacity>
-            </LinearGradient>
-          </Animated.View>
-        </View>
+      {showStarterBlockedModal && (
+        <StarterPlanBlockedModal
+          onClose={() => {
+            setShowStarterBlockedModal(false);
+            router.push('/login');
+          }}
+        />
       )}
     </View>
   );
@@ -474,16 +526,6 @@ const styles = StyleSheet.create({
   content: { flex: 1, paddingHorizontal: scale(24), paddingTop: scale(16) },
 
   logoSection: { alignItems: 'center', marginBottom: scale(20) },
-  logoOuter: {
-    ...Platform.select({
-      ios: { shadowColor: '#14b8a6', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 20 },
-      android: { elevation: 12 },
-    }),
-  },
-  logoGradient: { width: scale(76), height: scale(76), borderRadius: scale(22), alignItems: 'center', justifyContent: 'center' },
-
-  title: { fontSize: fontSizes['3xl'], fontWeight: '900', color: '#0f172a', textAlign: 'center', marginBottom: scale(4), letterSpacing: 0.5 },
-  subtitle: { fontSize: fontSizes.md, color: '#64748b', textAlign: 'center', marginBottom: scale(22) },
 
   formCard: {
     borderRadius: scale(24), overflow: 'hidden', backgroundColor: '#ffffff', borderWidth: 1, borderColor: 'rgba(0,0,0,0.06)', marginBottom: scale(14),
@@ -534,10 +576,37 @@ const styles = StyleSheet.create({
 
   // Verification
   verifyIconWrap: { alignItems: 'center', marginBottom: scale(20) },
-  verifyIconGradient: { width: scale(72), height: scale(72), borderRadius: scale(20), alignItems: 'center', justifyContent: 'center' },
-  verifyTitle: { fontSize: fontSizes['2xl'], fontWeight: '900', color: '#0f172a', textAlign: 'center', marginBottom: scale(6) },
-  verifySubtitle: { fontSize: fontSizes.base, color: '#64748b', textAlign: 'center', marginBottom: scale(4) },
-  verifyEmailText: { fontSize: fontSizes.md, fontWeight: '700', color: '#0d9488', textAlign: 'center', marginBottom: scale(18) },
+  verifyEmailText: {
+    fontSize: fontSizes.md,
+    fontWeight: '700',
+    color: '#0d9488',
+    textAlign: 'center',
+    marginTop: scale(4),
+    marginBottom: scale(12),
+    lineHeight: Math.round(fontSizes.md * 1.4),
+  },
+  spamNoteBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: scale(12),
+    paddingHorizontal: scale(14),
+    paddingVertical: scale(12),
+    borderRadius: scale(14),
+    backgroundColor: '#fffbeb',
+    borderWidth: 1,
+    borderColor: '#fde68a',
+    marginBottom: scale(18),
+  },
+  spamNoteIconWrap: {
+    marginTop: scale(1),
+  },
+  spamNoteText: {
+    flex: 1,
+    fontSize: fontSizes.sm,
+    color: '#92400e',
+    lineHeight: Math.round(fontSizes.sm * 1.45),
+    fontWeight: '500',
+  },
 
   timerBadge: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: scale(8), paddingHorizontal: scale(18), paddingVertical: scale(10), borderRadius: scale(20), alignSelf: 'center', marginBottom: scale(24) },
   timerActive: { backgroundColor: '#dbeafe', borderWidth: 1, borderColor: '#bfdbfe' },

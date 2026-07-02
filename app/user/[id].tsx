@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   StyleSheet,
   View,
@@ -10,6 +10,7 @@ import {
   TextInput,
   Platform,
   Linking,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -18,10 +19,12 @@ import { LinearGradient } from 'expo-linear-gradient';
 import Animated, { FadeInDown, FadeIn } from 'react-native-reanimated';
 import { ThemedText } from '@/components/themed-text';
 import { IconSymbol } from '@/components/ui/icon-symbol';
-import { useRouter, useLocalSearchParams, useNavigation } from 'expo-router';
+import { useRouter, useLocalSearchParams, useNavigation, useFocusEffect } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
 import { apiRequest, getImageUrl } from '@/utils/backend';
+import { getRouteParamId } from '@/utils/openChatWithUser';
 import { getPadding, getFontSizes, scale } from '@/utils/responsive';
+import { usePullToRefresh } from '@/hooks/usePullToRefresh';
 
 const padding = getPadding();
 const fontSizes = getFontSizes();
@@ -51,11 +54,23 @@ interface Rate {
   createdAt: string;
 }
 
+interface SellerCar {
+  _id: string;
+  id?: string;
+  brand: string;
+  model: string;
+  year: number;
+  km: number;
+  price: number;
+  status: string;
+  images?: string[];
+}
+
 export default function UserDetailsPage() {
   const router = useRouter();
   const navigation = useNavigation();
   const params = useLocalSearchParams();
-  const userId = params.id as string;
+  const userId = getRouteParamId(params.id as string | string[] | undefined);
   const { user: currentUser, isAuthenticated, token } = useAuth();
   const [user, setUser] = useState<User | null>(null);
   const [profileImage, setProfileImage] = useState<string | null>(null);
@@ -71,6 +86,8 @@ export default function UserDetailsPage() {
   const [ratingStar, setRatingStar] = useState(0);
   const [ratingMessage, setRatingMessage] = useState('');
   const [isSubmittingRate, setIsSubmittingRate] = useState(false);
+  const [sellerCars, setSellerCars] = useState<SellerCar[]>([]);
+  const [loadingCars, setLoadingCars] = useState(true);
 
   // Hide default header
   useEffect(() => {
@@ -80,130 +97,145 @@ export default function UserDetailsPage() {
   }, [navigation]);
 
   useEffect(() => {
-    const fetchUser = async () => {
-      try {
-        setLoading(true);
-        setError('');
+    navigation.setOptions({
+      headerShown: false,
+    });
+  }, [navigation]);
 
-        // Fetch user data
-        const userRes = await apiRequest(`/auth/user/${userId}`);
-        
-        if (!userRes.ok) {
-          setError("Utilisateur non trouvé");
-          setLoading(false);
-          return;
-        }
-
-        const userData = await userRes.json();
-        if (userData.ok && userData.user) {
-          setUser(userData.user);
-        }
-
-        // Fetch profile image
-        const imageRes = await apiRequest(`/user-image/${userId}`);
-        if (imageRes.ok) {
-          const imageData = await imageRes.json();
-          if (imageData.ok && imageData.userImage) {
-            setProfileImage(imageData.userImage.image);
-          }
-        }
-      } catch (error) {
-        console.error('Error fetching user:', error);
-        setError("Erreur de connexion. Veuillez réessayer.");
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    if (userId) {
-      fetchUser();
+  const loadRatingMeta = useCallback(async () => {
+    if (!userId || !currentUser || !token || !isAuthenticated || userId === currentUser._id) {
+      setCanRate(false);
+      return;
     }
-  }, [userId]);
 
-  // Fetch rates for this user
-  useEffect(() => {
-    const fetchRates = async () => {
-      try {
-        setLoadingRates(true);
-        const res = await apiRequest(`/rate/user/${userId}`);
-        
-        if (res.ok) {
-          const data = await res.json();
-          if (data.ok) {
-            setRates(data.rates || []);
-            setAverageRating(data.averageRating || 0);
-            setTotalRatings(data.totalRatings || 0);
-          }
-        }
-      } catch (error) {
-        console.error('Error fetching rates:', error);
-      } finally {
-        setLoadingRates(false);
+    try {
+      const res = await apiRequest(`/rate/user/${userId}/can-rate`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.ok) setCanRate(data.canRate || false);
       }
-    };
-
-    if (userId) {
-      fetchRates();
+    } catch (error) {
+      console.error('Error checking if can rate:', error);
     }
-  }, [userId]);
 
-  // Check if user can rate this seller
-  useEffect(() => {
-    const checkCanRate = async () => {
-      if (!currentUser || !token || !isAuthenticated || userId === currentUser._id) {
-        setCanRate(false);
-        return;
-      }
-
-      try {
-        const res = await apiRequest(`/rate/user/${userId}/can-rate`, {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-          },
-        });
-        
-        if (res.ok) {
-          const data = await res.json();
-          if (data.ok) {
-            setCanRate(data.canRate || false);
-          }
+    try {
+      const res = await apiRequest(`/rate/user/${userId}/my-rate`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.ok && data.rate) {
+          setUserRate(data.rate);
+          setRatingStar(data.rate.star);
+          setRatingMessage(data.rate.message || '');
         }
-      } catch (error) {
-        console.error('Error checking if can rate:', error);
       }
-    };
-
-    // Fetch user's existing rate
-    const fetchUserRate = async () => {
-      if (!currentUser || !token || !isAuthenticated || userId === currentUser._id) {
-        return;
-      }
-
-      try {
-        const res = await apiRequest(`/rate/user/${userId}/my-rate`, {
-          headers: {
-            'Authorization': `Bearer ${token}`,
-          },
-        });
-        
-        if (res.ok) {
-          const data = await res.json();
-          if (data.ok && data.rate) {
-            setUserRate(data.rate);
-            setRatingStar(data.rate.star);
-            setRatingMessage(data.rate.message || '');
-          }
-        }
-      } catch (error) {
-        console.error('Error fetching user rate:', error);
-      }
-    };
-
-    if (userId && currentUser && token && isAuthenticated) {
-      checkCanRate();
-      fetchUserRate();
+    } catch (error) {
+      console.error('Error fetching user rate:', error);
     }
   }, [userId, currentUser, token, isAuthenticated]);
+
+  const loadUserPageData = useCallback(async (silent = false) => {
+    if (!userId) {
+      if (!silent) {
+        setLoading(false);
+        setError('Utilisateur non trouvé');
+      }
+      return;
+    }
+
+    try {
+      if (!silent) {
+        setLoading(true);
+        setError('');
+      }
+
+      const userRes = await apiRequest(`/auth/user/${encodeURIComponent(userId)}`);
+      const userData = await userRes.json().catch(() => null);
+
+      if (!userRes.ok || !userData?.ok || !userData.user) {
+        if (!silent) {
+          setError(
+            typeof userData?.message === 'string'
+              ? userData.message
+              : 'Utilisateur non trouvé',
+          );
+        }
+        return;
+      }
+
+      setUser(userData.user);
+      setError('');
+
+      const imageRes = await apiRequest(`/user-image/${encodeURIComponent(userId)}`);
+      if (imageRes.ok) {
+        const imageData = await imageRes.json().catch(() => null);
+        if (imageData?.ok && imageData.userImage) {
+          setProfileImage(imageData.userImage.image);
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching user:', error);
+      if (!silent) {
+        setError('Erreur de connexion. Veuillez réessayer.');
+      }
+    } finally {
+      if (!silent) setLoading(false);
+    }
+
+    try {
+      if (!silent) setLoadingRates(true);
+      const res = await apiRequest(`/rate/user/${encodeURIComponent(userId)}`);
+      if (res.ok) {
+        const data = await res.json().catch(() => null);
+        if (data?.ok) {
+          setRates(data.rates || []);
+          setAverageRating(data.averageRating || 0);
+          setTotalRatings(data.totalRatings || 0);
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching rates:', error);
+    } finally {
+      if (!silent) setLoadingRates(false);
+    }
+
+    try {
+      if (!silent) setLoadingCars(true);
+      const carsRes = await apiRequest(`/car/by-owner/${encodeURIComponent(userId)}`);
+      if (carsRes.ok) {
+        const carsData = await carsRes.json().catch(() => null);
+        if (carsData?.ok && Array.isArray(carsData.cars)) {
+          setSellerCars(carsData.cars);
+        } else {
+          setSellerCars([]);
+        }
+      } else {
+        setSellerCars([]);
+      }
+    } catch (error) {
+      console.error('Error fetching seller cars:', error);
+      setSellerCars([]);
+    } finally {
+      if (!silent) setLoadingCars(false);
+    }
+
+    await loadRatingMeta();
+  }, [userId, loadRatingMeta]);
+
+  useEffect(() => {
+    void loadUserPageData(false);
+  }, [loadUserPageData]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (userId) void loadUserPageData(true);
+    }, [userId, loadUserPageData])
+  );
+
+  const { refreshing, onRefresh } = usePullToRefresh(() => loadUserPageData(true));
 
   const handleSubmitRate = async () => {
     if (!ratingStar || ratingStar < 1 || ratingStar > 5) {
@@ -338,6 +370,9 @@ export default function UserDetailsPage() {
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0d9488" colors={['#0d9488']} />
+        }
       >
         {/* Profile Card */}
         <Animated.View
@@ -543,6 +578,84 @@ export default function UserDetailsPage() {
                     Soyez le premier à noter ce vendeur !
                   </ThemedText>
                 )}
+              </View>
+            )}
+          </LinearGradient>
+        </Animated.View>
+
+        {/* Seller cars */}
+        <Animated.View
+          entering={FadeInDown.duration(600).delay(200)}
+          style={styles.carsCard}
+        >
+          <LinearGradient
+            colors={['rgba(255, 255, 255, 0.98)', 'rgba(255, 255, 255, 0.95)']}
+            style={styles.carsCardGradient}
+          >
+            <ThemedText style={styles.sectionTitle}>Véhicules en vente</ThemedText>
+
+            {loadingCars ? (
+              <View style={styles.loadingCarsContainer}>
+                <ActivityIndicator size="large" color="#0d9488" />
+              </View>
+            ) : sellerCars.length === 0 ? (
+              <View style={styles.noCarsContainer}>
+                <IconSymbol name="car" size={scale(48)} color="#9ca3af" />
+                <ThemedText style={styles.noCarsText}>
+                  Aucun véhicule en vente pour le moment
+                </ThemedText>
+              </View>
+            ) : (
+              <View style={styles.carsList}>
+                {sellerCars.map((car) => {
+                  const carId = car._id || car.id;
+                  const imageUri =
+                    car.images && car.images.length > 0
+                      ? getImageUrl(car.images[0])
+                      : null;
+
+                  return (
+                    <TouchableOpacity
+                      key={carId}
+                      style={styles.carCard}
+                      activeOpacity={0.9}
+                      onPress={() => router.push(`/car/${carId}` as any)}
+                    >
+                      <View style={styles.carImageWrap}>
+                        {imageUri ? (
+                          <Image
+                            source={{ uri: imageUri }}
+                            style={styles.carImage}
+                            contentFit="cover"
+                          />
+                        ) : (
+                          <View style={styles.carImagePlaceholder}>
+                            <IconSymbol name="car.fill" size={scale(32)} color="#9ca3af" />
+                          </View>
+                        )}
+                        <View style={styles.carYearBadge}>
+                          <ThemedText style={styles.carYearBadgeText}>{car.year}</ThemedText>
+                        </View>
+                      </View>
+                      <View style={styles.carInfo}>
+                        <ThemedText style={styles.carTitle} numberOfLines={1}>
+                          {car.brand} {car.model}
+                        </ThemedText>
+                        <View style={styles.carMetaRow}>
+                          <View style={styles.carMetaItem}>
+                            <IconSymbol name="speedometer" size={scale(14)} color="#64748b" />
+                            <ThemedText style={styles.carMetaText}>
+                              {car.km?.toLocaleString() || 0} km
+                            </ThemedText>
+                          </View>
+                          <ThemedText style={styles.carPrice}>
+                            {car.price?.toLocaleString() || 0} DA
+                          </ThemedText>
+                        </View>
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
             )}
           </LinearGradient>
@@ -957,6 +1070,101 @@ const styles = StyleSheet.create({
     fontSize: fontSizes.sm,
     color: '#9ca3af',
     marginTop: padding.small,
+  },
+  carsCard: {
+    marginTop: padding.medium,
+    borderRadius: scale(24),
+    overflow: 'hidden',
+  },
+  carsCardGradient: {
+    padding: padding.large,
+  },
+  loadingCarsContainer: {
+    paddingVertical: padding.large * 2,
+    alignItems: 'center',
+  },
+  noCarsContainer: {
+    alignItems: 'center',
+    paddingVertical: padding.large * 2,
+  },
+  noCarsText: {
+    fontSize: fontSizes.md,
+    color: '#64748b',
+    marginTop: padding.medium,
+    textAlign: 'center',
+  },
+  carsList: {
+    gap: padding.medium,
+  },
+  carCard: {
+    flexDirection: 'row',
+    backgroundColor: '#f9fafb',
+    borderRadius: scale(16),
+    borderWidth: scale(1),
+    borderColor: '#e5e7eb',
+    overflow: 'hidden',
+  },
+  carImageWrap: {
+    width: scale(112),
+    height: scale(96),
+    backgroundColor: '#e5e7eb',
+    position: 'relative',
+  },
+  carImage: {
+    width: '100%',
+    height: '100%',
+  },
+  carImagePlaceholder: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f3f4f6',
+  },
+  carYearBadge: {
+    position: 'absolute',
+    top: scale(6),
+    left: scale(6),
+    backgroundColor: 'rgba(15, 23, 42, 0.72)',
+    paddingHorizontal: scale(8),
+    paddingVertical: scale(3),
+    borderRadius: scale(8),
+  },
+  carYearBadgeText: {
+    color: '#ffffff',
+    fontSize: fontSizes.xs,
+    fontWeight: '700',
+  },
+  carInfo: {
+    flex: 1,
+    padding: padding.medium,
+    justifyContent: 'center',
+  },
+  carTitle: {
+    fontSize: fontSizes.md,
+    fontWeight: '700',
+    color: '#1f2937',
+    marginBottom: scale(8),
+  },
+  carMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: scale(8),
+  },
+  carMetaItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: scale(4),
+    flex: 1,
+  },
+  carMetaText: {
+    fontSize: fontSizes.sm,
+    color: '#64748b',
+  },
+  carPrice: {
+    fontSize: fontSizes.sm,
+    fontWeight: '800',
+    color: '#0d9488',
   },
   modalOverlay: {
     flex: 1,

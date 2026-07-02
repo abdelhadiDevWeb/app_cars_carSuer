@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   StyleSheet,
   View,
@@ -11,9 +11,10 @@ import {
   Platform,
   KeyboardAvoidingView,
   AppState,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { Image } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { StatusBar } from 'expo-status-bar';
@@ -34,6 +35,7 @@ import { apiRequest, getImageUrl, getBackendUrl } from '@/utils/backend';
 import { useNotifications } from '@/hooks/useNotifications';
 import { useTranslation } from 'react-i18next';
 import { LanguageSelectionModal } from '@/components/LanguageSelectionModal';
+import { usePullToRefresh } from '@/hooks/usePullToRefresh';
 import {
   getPadding,
   getFontSizes,
@@ -46,8 +48,29 @@ const fontSizes = getFontSizes();
 
 const AnimatedTouchableOpacity = Animated.createAnimatedComponent(TouchableOpacity);
 
+function mergeProfileUser(userData: any | null, authUser: { firstName?: string; lastName?: string; email?: string; name?: string; type?: string } | null) {
+  if (userData && authUser) {
+    return { ...authUser, ...userData };
+  }
+  return userData ?? authUser ?? null;
+}
+
+function getProfileDisplayName(resolved: any, defaultLabel: string): string {
+  if (!resolved) return defaultLabel;
+  if (resolved.type === 'workshop') {
+    return resolved.name || resolved.email || defaultLabel;
+  }
+  const first = String(resolved.firstName || '').trim();
+  const last = String(resolved.lastName || '').trim();
+  if (first && last) return `${first} ${last}`;
+  if (first) return first;
+  if (last) return last;
+  if (resolved.email) return String(resolved.email).split('@')[0] || resolved.email;
+  return defaultLabel;
+}
+
 export default function ProfileScreen() {
-  const { isAuthenticated, user, logout, refreshUser } = useAuth();
+  const { isAuthenticated, isLoading: authLoading, user, logout, refreshUser } = useAuth();
   const { unreadCount } = useNotifications();
   const { t, i18n } = useTranslation();
   const router = useRouter();
@@ -88,40 +111,22 @@ export default function ProfileScreen() {
   const headerScale = useSharedValue(1);
   const statsOpacity = useSharedValue(0);
   const editButtonScale = useSharedValue(1);
+  const isFirstFocusRef = useRef(true);
+  const refreshInFlightRef = useRef(false);
+  const userDataRef = useRef<any>(null);
+  userDataRef.current = userData;
 
-  useEffect(() => {
-    if (!isAuthenticated) {
-      router.replace('/(tabs)');
-      return;
-    }
-    fetchUserData();
-    fetchUserImage();
-    fetchStats();
-    fetchSubscription();
-  }, [isAuthenticated]);
+  const userId = user?._id;
+  const userType = user?.type;
 
-  useEffect(() => {
-    // Entrance animations
-    headerScale.value = withSpring(1, { damping: 12, stiffness: 100 });
-    statsOpacity.value = withTiming(1, { duration: 800 });
-  }, []);
-
-  // Refresh on app foreground
-  useEffect(() => {
-    const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active') {
-        fetchUserData();
-        fetchUserImage();
-        fetchSubscription();
-      }
-    });
-    return () => sub.remove();
-  }, []);
-
-  const fetchUserData = async () => {
+  const fetchUserData = useCallback(async (silent = false) => {
     try {
-      setIsLoading(true);
+      if (!silent) setIsLoading(true);
       const response = await apiRequest('/auth/me');
+      if (response.status === 401) {
+        await logout();
+        return;
+      }
       if (response.ok) {
         const data = await response.json();
         if (data.ok && data.user) {
@@ -131,19 +136,26 @@ export default function ProfileScreen() {
             lastName: data.user.lastName || '',
             phone: data.user.phone || '',
           });
+          return;
         }
+      }
+      if (!userDataRef.current && user) {
+        setUserData(user);
       }
     } catch (error) {
       console.error('Error fetching user data:', error);
+      if (!userDataRef.current && user) {
+        setUserData(user);
+      }
     } finally {
-      setIsLoading(false);
+      if (!silent) setIsLoading(false);
     }
-  };
+  }, [logout, user]);
 
-  const fetchUserImage = async () => {
-    if (!user?._id) return;
+  const fetchUserImage = useCallback(async () => {
+    if (!userId) return;
     try {
-      const response = await apiRequest(`/user-image/${user._id}`);
+      const response = await apiRequest(`/user-image/${userId}`);
       if (response.ok) {
         const data = await response.json();
         if (data.ok && data.userImage?.image) {
@@ -153,10 +165,10 @@ export default function ProfileScreen() {
     } catch (error) {
       console.error('Error fetching user image:', error);
     }
-  };
+  }, [userId]);
 
-  const fetchStats = async () => {
-    if (!user || user.type !== 'user') return;
+  const fetchStats = useCallback(async () => {
+    if (!userId || userType !== 'user') return;
     try {
       const response = await apiRequest('/seller-stats');
       if (response.ok) {
@@ -168,10 +180,10 @@ export default function ProfileScreen() {
     } catch (error) {
       console.error('Error fetching stats:', error);
     }
-  };
+  }, [userId, userType]);
 
-  const fetchSubscription = async () => {
-    if (!user || user.type !== 'user') return;
+  const fetchSubscription = useCallback(async () => {
+    if (!userId || userType !== 'user') return;
     try {
       const response = await apiRequest('/abonnement/my-subscription');
       if (response.ok) {
@@ -183,7 +195,75 @@ export default function ProfileScreen() {
     } catch (error) {
       console.error('Error fetching subscription:', error);
     }
-  };
+  }, [userId, userType]);
+
+  const refreshProfileData = useCallback(async () => {
+    if (refreshInFlightRef.current) return;
+    refreshInFlightRef.current = true;
+    try {
+      await Promise.all([
+        fetchUserData(true),
+        fetchUserImage(),
+        fetchStats(),
+        fetchSubscription(),
+      ]);
+    } finally {
+      refreshInFlightRef.current = false;
+    }
+  }, [fetchUserData, fetchUserImage, fetchStats, fetchSubscription]);
+
+  const { refreshing, onRefresh } = usePullToRefresh(refreshProfileData);
+
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setUserData(null);
+      setUserImage(null);
+      setStats(null);
+      setSubscription(null);
+      router.replace('/(tabs)');
+      return;
+    }
+    if (user && !userData) {
+      setUserData(user);
+      setEditForm({
+        firstName: user.firstName || '',
+        lastName: user.lastName || '',
+        phone: '',
+      });
+    }
+    void fetchUserData();
+    void fetchUserImage();
+    void fetchStats();
+    void fetchSubscription();
+  }, [isAuthenticated, user?._id]);
+
+  useEffect(() => {
+    // Entrance animations
+    headerScale.value = withSpring(1, { damping: 12, stiffness: 100 });
+    statsOpacity.value = withTiming(1, { duration: 800 });
+  }, []);
+
+  // Refresh when app returns to foreground (only while this screen is mounted).
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active' && isAuthenticated) {
+        void refreshProfileData();
+      }
+    });
+    return () => sub.remove();
+  }, [isAuthenticated, refreshProfileData]);
+
+  // Silent refresh when revisiting the Profile tab (skip first focus — initial useEffect loads).
+  useFocusEffect(
+    useCallback(() => {
+      if (!isAuthenticated) return;
+      if (isFirstFocusRef.current) {
+        isFirstFocusRef.current = false;
+        return;
+      }
+      void refreshProfileData();
+    }, [isAuthenticated, refreshProfileData])
+  );
 
   // Timer effect to update remaining time (hidden with subscription timer block in UI)
   // useEffect(() => {
@@ -387,20 +467,28 @@ export default function ProfileScreen() {
   };
 
   const getUserInitials = () => {
-    if (!userData) return 'U';
-    const firstName = userData.firstName || '';
-    const lastName = userData.lastName || '';
+    const resolved = mergeProfileUser(userData, user);
+    if (!resolved) return 'U';
+    if (resolved.type === 'workshop' && resolved.name) {
+      return resolved.name.substring(0, 2).toUpperCase();
+    }
+    const firstName = resolved.firstName || '';
+    const lastName = resolved.lastName || '';
     if (firstName && lastName) {
       return `${firstName.charAt(0)}${lastName.charAt(0)}`.toUpperCase();
     }
     if (firstName) {
       return firstName.substring(0, 2).toUpperCase();
     }
-    if (userData.email) {
-      return userData.email.substring(0, 2).toUpperCase();
+    if (resolved.email) {
+      return resolved.email.substring(0, 2).toUpperCase();
     }
     return 'U';
   };
+
+  const resolvedProfileUser = mergeProfileUser(userData, user);
+  const profileDisplayName = getProfileDisplayName(resolvedProfileUser, t('profile.defaultUser'));
+  const profileEmail = resolvedProfileUser?.email || user?.email || '';
 
   const headerAnimatedStyle = useAnimatedStyle(() => ({
     transform: [{ scale: headerScale.value }],
@@ -438,11 +526,22 @@ export default function ProfileScreen() {
   //   return { days, hours, minutes, seconds, expired: false };
   // };
 
+  if (authLoading) {
+    return (
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#0d9488" />
+          <ThemedText style={styles.loadingText}>{t('common.loading')}</ThemedText>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   if (!isAuthenticated) {
     return null;
   }
 
-  if (isLoading) {
+  if (isLoading && !resolvedProfileUser) {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
         <View style={styles.loadingContainer}>
@@ -462,6 +561,9 @@ export default function ProfileScreen() {
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0d9488" colors={['#0d9488']} />
+        }
       >
         {/* Background decoration */}
         <View style={styles.backgroundDecoration}>
@@ -522,14 +624,10 @@ export default function ProfileScreen() {
 
             <View style={styles.userInfo}>
               <ThemedText style={styles.userName}>
-                {userData?.type === 'workshop' && userData?.name
-                  ? userData.name
-                  : userData?.firstName && userData?.lastName
-                    ? `${userData.firstName} ${userData.lastName}`
-                    : userData?.firstName || userData?.email || t('profile.defaultUser')}
+                {profileDisplayName}
               </ThemedText>
-              {!!userData?.email && (
-                <ThemedText style={styles.userEmail}>{userData.email}</ThemedText>
+              {!!profileEmail && (
+                <ThemedText style={styles.userEmail}>{profileEmail}</ThemedText>
               )}
               {!!userData?.createdAt && (
                 <ThemedText style={styles.userMemberSince}>

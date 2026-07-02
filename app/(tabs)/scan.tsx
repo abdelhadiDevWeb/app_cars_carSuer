@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   StyleSheet,
   View,
@@ -12,7 +12,7 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -20,9 +20,14 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import { ThemedText } from '@/components/themed-text';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { getPadding, getFontSizes, scale } from '@/utils/responsive';
+import { pageTitleBlockStyles } from '@/utils/pageTitleStyles';
 import { apiRequest } from '@/utils/backend';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
+import { useIsFocused } from '@react-navigation/native';
 import { useTranslation } from 'react-i18next';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+const SCAN_CAMERA_PERMISSION_PROMPTED_KEY = 'scan_camera_permission_prompted';
 
 const padding = getPadding();
 const fontSizes = getFontSizes();
@@ -40,6 +45,35 @@ interface CarVerificationResult {
     status: string;
   };
   message: string;
+}
+
+interface VinLookupDetails {
+  make?: string | null;
+  model?: string | null;
+  year?: string | number | null;
+  bodyType?: string | null;
+  engine?: string | null;
+  transmission?: string | null;
+  fuelType?: string | null;
+}
+
+function formatVinDetailValue(value: unknown): string | null {
+  if (value == null) return null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value);
+  }
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    const parts = [obj.name, obj.type, obj.description, obj.displacement]
+      .filter((part) => typeof part === 'string' && part.trim().length > 0)
+      .map((part) => String(part).trim());
+    return parts.length > 0 ? parts.join(' · ') : null;
+  }
+  return null;
 }
 
 /** Map known `/car/lookup-vin` API messages (often French) to i18n keys. */
@@ -72,14 +106,27 @@ function localizeVinLookupApiMessage(
   return m;
 }
 
+/** Space for the floating pill tab bar (see app/(tabs)/_layout.tsx). */
+function getTabBarScrollPadding(insets: { bottom: number }): number {
+  const tabBarHeight = Platform.OS === 'ios' ? scale(72) : scale(68);
+  const tabBarBottom =
+    Platform.OS === 'ios'
+      ? Math.max(insets.bottom + scale(16), scale(22))
+      : Math.max(insets.bottom + scale(12), scale(18));
+  return tabBarHeight + tabBarBottom + scale(24);
+}
+
 export default function ScanScreen() {
   const { t } = useTranslation();
+  const insets = useSafeAreaInsets();
+  const scrollBottomPadding = getTabBarScrollPadding(insets);
   const [isScanning, setIsScanning] = useState(false);
   const [permission, requestPermission] = useCameraPermissions();
   const [isVerifying, setIsVerifying] = useState(false);
   const [verificationResult, setVerificationResult] = useState<CarVerificationResult | null>(null);
   const [scanned, setScanned] = useState(false);
   const router = useRouter();
+  const isFocused = useIsFocused();
   const verifyStartedAtRef = useRef<number | null>(null);
   const verifyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -89,6 +136,7 @@ export default function ScanScreen() {
     valid: boolean;
     message: string;
     remark?: string;
+    details?: VinLookupDetails | null;
   } | null>(null);
   /** VIN block collapsed by default */
   const [vinSectionExpanded, setVinSectionExpanded] = useState(false);
@@ -129,6 +177,10 @@ export default function ScanScreen() {
       }
 
       if (data?.ok && data.valid) {
+        const details =
+          data.details && typeof data.details === 'object'
+            ? (data.details as VinLookupDetails)
+            : null;
         setVinResult({
           valid: true,
           message:
@@ -138,6 +190,7 @@ export default function ScanScreen() {
                 ? data.message
                 : t('scan.vinValid'),
           remark: typeof data.remark === 'string' ? data.remark : undefined,
+          details,
         });
       } else {
         const raw =
@@ -164,6 +217,41 @@ export default function ScanScreen() {
     }
   }, [isScanning]);
 
+  const promptCameraPermissionOnFirstVisit = useCallback(async () => {
+    if (isScanning || permission == null) return;
+    if (permission.granted || permission.canAskAgain === false) return;
+
+    try {
+      const alreadyPrompted = await AsyncStorage.getItem(SCAN_CAMERA_PERMISSION_PROMPTED_KEY);
+      if (alreadyPrompted === '1') return;
+
+      const result = await requestPermission();
+      await AsyncStorage.setItem(SCAN_CAMERA_PERMISSION_PROMPTED_KEY, '1');
+
+      if (!result?.granted && result?.canAskAgain === false) {
+        Alert.alert(
+          t('scan.permissionRequiredTitle'),
+          t('scan.permissionRequiredBody'),
+          [{ text: t('common.ok') }],
+        );
+      }
+    } catch {
+      /* user can tap Scan to retry */
+    }
+  }, [isScanning, permission, requestPermission, t]);
+
+  // First visit to Scan tab: request camera permission when entering the page.
+  useFocusEffect(
+    useCallback(() => {
+      void promptCameraPermissionOnFirstVisit();
+    }, [promptCameraPermissionOnFirstVisit]),
+  );
+
+  useEffect(() => {
+    if (!isFocused) return;
+    void promptCameraPermissionOnFirstVisit();
+  }, [isFocused, promptCameraPermissionOnFirstVisit]);
+
   const clearVerifyTimeout = () => {
     if (verifyTimeoutRef.current) {
       clearTimeout(verifyTimeoutRef.current);
@@ -184,20 +272,17 @@ export default function ScanScreen() {
   };
 
   const handleScan = async () => {
-    if (!permission) {
-      // Permission is still being requested
-      return;
-    }
+    let currentPermission = permission;
 
-    if (!permission.granted) {
-      // Request permission
+    if (!currentPermission?.granted) {
       const result = await requestPermission();
-      if (!result.granted) {
-    Alert.alert(
+      currentPermission = result ?? currentPermission;
+      if (!currentPermission?.granted) {
+        Alert.alert(
           t('scan.permissionRequiredTitle'),
           t('scan.permissionRequiredBody'),
-      [{ text: t('common.ok') }]
-    );
+          [{ text: t('common.ok') }],
+        );
         return;
       }
     }
@@ -206,6 +291,9 @@ export default function ScanScreen() {
     setScanned(false);
     setVerificationResult(null);
   };
+
+  const cameraPermanentlyDenied =
+    permission != null && !permission.granted && permission.canAskAgain === false;
 
   const handleBarCodeScanned = async ({ data }: { data: string }) => {
     if (scanned || isVerifying) return;
@@ -466,7 +554,10 @@ export default function ScanScreen() {
       >
       <ScrollView
         style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[
+          styles.scrollContent,
+          { paddingBottom: scrollBottomPadding },
+        ]}
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
@@ -487,10 +578,12 @@ export default function ScanScreen() {
                 <IconSymbol name="qrcode.viewfinder" size={scale(48)} color="#ffffff" />
               </LinearGradient>
             </View>
-            <ThemedText style={styles.title}>{t('tabs.scan')}</ThemedText>
-            <ThemedText style={styles.subtitle}>
-              {t('scan.pageSubtitle')}
-            </ThemedText>
+            <View style={pageTitleBlockStyles.block}>
+              <ThemedText style={pageTitleBlockStyles.cardTitle}>{t('tabs.scan')}</ThemedText>
+              <ThemedText style={pageTitleBlockStyles.cardSubtitle}>
+                {t('scan.pageSubtitle')}
+              </ThemedText>
+            </View>
           </LinearGradient>
         </Animated.View>
 
@@ -568,19 +661,74 @@ export default function ScanScreen() {
                       vinResult.valid ? styles.vinResultOk : styles.vinResultBad,
                     ]}
                   >
-                    <IconSymbol
-                      name={vinResult.valid ? 'checkmark.circle.fill' : 'xmark.circle.fill'}
-                      size={scale(22)}
-                      color={vinResult.valid ? '#059669' : '#dc2626'}
-                    />
-                    <ThemedText
-                      style={[
-                        styles.vinResultText,
-                        vinResult.valid ? styles.vinResultTextOk : styles.vinResultTextBad,
-                      ]}
-                    >
-                      {vinResult.message}
-                    </ThemedText>
+                    <View style={styles.vinResultHeader}>
+                      <IconSymbol
+                        name={vinResult.valid ? 'checkmark.circle.fill' : 'xmark.circle.fill'}
+                        size={scale(22)}
+                        color={vinResult.valid ? '#059669' : '#dc2626'}
+                      />
+                      <ThemedText
+                        style={[
+                          styles.vinResultText,
+                          vinResult.valid ? styles.vinResultTextOk : styles.vinResultTextBad,
+                        ]}
+                      >
+                        {vinResult.valid ? t('scan.vinValid') : vinResult.message}
+                      </ThemedText>
+                    </View>
+                    {vinResult.valid && (vinResult.details || vinResult.remark) ? (
+                      <View style={styles.vinDetailsBox}>
+                        {(vinResult.remark || vinResult.message) ? (
+                          <ThemedText style={styles.vinDetailsTitle}>
+                            {vinResult.remark || vinResult.message}
+                          </ThemedText>
+                        ) : null}
+                        {vinResult.details ? (
+                          <>
+                            <ThemedText style={styles.vinDetailsSubtitle}>
+                              {t('scan.vinDetailsTitle')}
+                            </ThemedText>
+                            {[
+                              {
+                                label: t('cars.form.brand').replace(/\s*\*$/, ''),
+                                value: formatVinDetailValue(vinResult.details.make),
+                              },
+                              {
+                                label: t('cars.form.model').replace(/\s*\*$/, ''),
+                                value: formatVinDetailValue(vinResult.details.model),
+                              },
+                              {
+                                label: t('cars.form.year').replace(/\s*\*$/, ''),
+                                value: formatVinDetailValue(vinResult.details.year),
+                              },
+                              {
+                                label: t('scan.vinDetailBodyType'),
+                                value: formatVinDetailValue(vinResult.details.bodyType),
+                              },
+                              {
+                                label: t('cars.form.engineType'),
+                                value: formatVinDetailValue(vinResult.details.engine),
+                              },
+                              {
+                                label: t('cars.form.gearbox'),
+                                value: formatVinDetailValue(vinResult.details.transmission),
+                              },
+                              {
+                                label: t('cars.form.fuel'),
+                                value: formatVinDetailValue(vinResult.details.fuelType),
+                              },
+                            ]
+                              .filter((row) => row.value)
+                              .map((row) => (
+                                <View key={row.label} style={styles.vinDetailRow}>
+                                  <ThemedText style={styles.vinDetailLabel}>{row.label}</ThemedText>
+                                  <ThemedText style={styles.vinDetailValue}>{row.value}</ThemedText>
+                                </View>
+                              ))}
+                          </>
+                        ) : null}
+                      </View>
+                    ) : null}
                   </View>
                 ) : null}
               </>
@@ -588,26 +736,41 @@ export default function ScanScreen() {
           </LinearGradient>
         </Animated.View>
 
-        {/* Scan Button */}
+        {/* Scan Button — keep above floating tab bar (extra bottom padding on ScrollView) */}
         <View style={styles.content}>
           <TouchableOpacity
-            onPress={handleScan}
-            style={styles.scanButton}
+            onPress={() => {
+              void handleScan();
+            }}
+            style={[
+              styles.scanButton,
+              cameraPermanentlyDenied ? styles.scanButtonDisabled : null,
+            ]}
             activeOpacity={0.8}
-            disabled={!permission || (!permission.granted && permission.canAskAgain === false)}
+            disabled={cameraPermanentlyDenied}
+            accessibilityRole="button"
+            accessibilityLabel={t('tabs.scan')}
           >
             <LinearGradient
-              colors={['#0d9488', '#14b8a6']}
+              colors={
+                cameraPermanentlyDenied
+                  ? ['#94a3b8', '#cbd5e1']
+                  : ['#0d9488', '#14b8a6']
+              }
               style={styles.scanButtonGradient}
             >
-              <IconSymbol name="qrcode.viewfinder" size={scale(32)} color="#ffffff" />
+              {permission == null ? (
+                <ActivityIndicator color="#ffffff" />
+              ) : (
+                <IconSymbol name="qrcode.viewfinder" size={scale(32)} color="#ffffff" />
+              )}
               <ThemedText style={styles.scanButtonText}>
                 {t('tabs.scan')}
               </ThemedText>
             </LinearGradient>
           </TouchableOpacity>
 
-          {permission && !permission.granted && (
+          {permission && !permission.granted && !cameraPermanentlyDenied && (
             <View style={styles.permissionWarning}>
               <IconSymbol name="exclamationmark.triangle.fill" size={scale(24)} color="#f59e0b" />
               <ThemedText style={styles.permissionWarningText}>
@@ -641,7 +804,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    paddingBottom: padding.large * 2,
+    flexGrow: 1,
   },
   header: {
     marginBottom: padding.large,
@@ -653,6 +816,7 @@ const styles = StyleSheet.create({
   headerGradient: {
     padding: padding.large,
     alignItems: 'center',
+    width: '100%',
   },
   iconContainer: {
     width: scale(100),
@@ -666,19 +830,6 @@ const styles = StyleSheet.create({
     height: '100%',
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  title: {
-    fontSize: fontSizes['3xl'],
-    fontWeight: '900',
-    color: '#1f2937',
-    marginBottom: padding.medium,
-    textAlign: 'center',
-  },
-  subtitle: {
-    fontSize: fontSizes.md,
-    color: '#64748b',
-    textAlign: 'center',
-    marginTop: padding.small,
   },
   vinSection: {
     marginHorizontal: padding.horizontal,
@@ -756,12 +907,15 @@ const styles = StyleSheet.create({
     color: '#ffffff',
   },
   vinResultBox: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: scale(10),
     marginTop: padding.medium,
     padding: padding.medium,
     borderRadius: scale(12),
+    gap: scale(10),
+  },
+  vinResultHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: scale(10),
   },
   vinResultOk: {
     backgroundColor: '#ecfdf5',
@@ -784,6 +938,44 @@ const styles = StyleSheet.create({
   vinResultTextBad: {
     color: '#991b1b',
   },
+  vinDetailsBox: {
+    marginTop: scale(4),
+    paddingTop: padding.small,
+    borderTopWidth: 1,
+    borderTopColor: '#a7f3d0',
+    gap: scale(8),
+  },
+  vinDetailsTitle: {
+    fontSize: fontSizes.md,
+    fontWeight: '800',
+    color: '#065f46',
+  },
+  vinDetailsSubtitle: {
+    fontSize: fontSizes.xs,
+    fontWeight: '800',
+    color: '#047857',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  vinDetailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: scale(12),
+  },
+  vinDetailLabel: {
+    flex: 1,
+    fontSize: fontSizes.xs,
+    color: '#047857',
+    fontWeight: '600',
+  },
+  vinDetailValue: {
+    flex: 1.2,
+    fontSize: fontSizes.xs,
+    color: '#065f46',
+    fontWeight: '800',
+    textAlign: 'right',
+  },
   content: {
     paddingHorizontal: padding.horizontal,
     gap: padding.large,
@@ -792,6 +984,10 @@ const styles = StyleSheet.create({
     borderRadius: scale(16),
     overflow: 'hidden',
     marginTop: padding.medium,
+    zIndex: 2,
+  },
+  scanButtonDisabled: {
+    opacity: 0.85,
   },
   scanButtonGradient: {
     flexDirection: 'row',

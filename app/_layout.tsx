@@ -27,10 +27,10 @@ import { I18nextProvider } from 'react-i18next';
 import i18n from '@/utils/i18n';
 import { useLanguage } from '@/contexts/LanguageContext';
 import { apiRequest } from '@/utils/backend';
+import { shouldShowSubscriptionExpiredModal } from '@/utils/subscriptionGuard';
 import { ThemedText } from '@/components/themed-text';
 import { IconSymbol } from '@/components/ui/icon-symbol';
 import { useTranslation } from 'react-i18next';
-
 // Keep the native splash screen visible until we decide the app is ready.
 void SplashScreen.preventAutoHideAsync().catch(() => {});
 
@@ -71,14 +71,21 @@ function NavigationHandler() {
       segments[0] === 'forgot-password';
     const inTabsGroup = segments[0] === '(tabs)';
     const inPublicCarDetails = segments[0] === 'car';
+    const inPublicUserProfile = segments[0] === 'user';
 
     // Splash screen handles its own routing (subscription check + visitor entry).
     // Avoid double redirects that can cause the splash to appear twice.
     if (inSplashGroup) return;
 
     if (!isAuthenticated) {
-      // Keep public access for tabs and car details when not authenticated.
-      if (!inSplashGroup && !inAuthGroup && !inTabsGroup && !inPublicCarDetails) {
+      // Keep public access for tabs, car details, and seller profiles when not authenticated.
+      if (
+        !inSplashGroup &&
+        !inAuthGroup &&
+        !inTabsGroup &&
+        !inPublicCarDetails &&
+        !inPublicUserProfile
+      ) {
         router.replace('/splash');
       }
     } else {
@@ -123,6 +130,7 @@ function ForegroundRefreshAndSubscriptionGuard() {
   const { t, i18n: i18nHook } = useTranslation();
   const [showExpiredModal, setShowExpiredModal] = useState(false);
   const checkingRef = useRef(false);
+  const skipNextForegroundCheckRef = useRef(true);
 
   useEffect(() => {
     if (!isReady) return;
@@ -144,14 +152,8 @@ function ForegroundRefreshAndSubscriptionGuard() {
           return;
         }
         const data = await res.json().catch(() => null);
-        const now = Date.now();
-        const isExpired =
-          !data?.ok ||
-          !data?.hasSubscription ||
-          !data?.subscription?.date_end ||
-          new Date(data.subscription.date_end).getTime() < now;
 
-        if (isExpired) {
+        if (shouldShowSubscriptionExpiredModal(data)) {
           setShowExpiredModal(true);
           // Best-effort server-side status updates (ignore failures)
           try {
@@ -173,9 +175,12 @@ function ForegroundRefreshAndSubscriptionGuard() {
 
     const sub = AppState.addEventListener('change', (state) => {
       if (state === 'active') {
-        // Tell screens to refresh their data
         DeviceEventEmitter.emit('appForeground');
-        // Re-check subscription
+        // Skip the first "active" on cold start — avoids false expired modal on first open.
+        if (skipNextForegroundCheckRef.current) {
+          skipNextForegroundCheckRef.current = false;
+          return;
+        }
         void checkSubscription();
       }
     });
@@ -239,6 +244,9 @@ export default function RootLayout() {
                   <Stack.Screen name="login" options={{ headerShown: false }} />
                   <Stack.Screen name="register" options={{ headerShown: false }} />
                   <Stack.Screen name="forgot-password" options={{ headerShown: false }} />
+                  <Stack.Screen name="car/[id]" options={{ headerShown: false }} />
+                  <Stack.Screen name="user/[id]" options={{ headerShown: false }} />
+                  <Stack.Screen name="workshop/[id]" options={{ headerShown: false }} />
                   <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
                 </Stack>
                 <NotificationBanner />

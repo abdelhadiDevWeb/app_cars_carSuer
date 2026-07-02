@@ -16,6 +16,8 @@ import { useAuth } from '@/contexts/AuthContext';
 import { useChat } from '@/contexts/ChatContext';
 import { useRouter, useSegments, usePathname } from 'expo-router';
 import { apiRequest } from '@/utils/backend';
+import { setPendingChatOpenUserId } from '@/utils/pendingChatOpen';
+import { getUserIdString } from '@/utils/openChatWithUser';
 import { scale, getPadding, getFontSizes } from '@/utils/responsive';
 
 const padding = getPadding();
@@ -250,8 +252,18 @@ export function NotificationBanner() {
 
       // Navigate based on notification type
       if (latestUnread.type === 'message') {
-        // Navigate to messages page with the specific chat
-        router.push(`/(tabs)/chat?userId=${latestUnread.id_sender?._id || latestUnread.id_sender?.id || latestUnread.id_sender}`);
+        const senderId = getUserIdString(
+          latestUnread.id_sender?._id ||
+            latestUnread.id_sender?.id ||
+            latestUnread.id_sender,
+        );
+        if (senderId) {
+          setPendingChatOpenUserId(senderId);
+          router.push({
+            pathname: '/(tabs)/chat',
+            params: { userId: senderId },
+          } as never);
+        }
       } else if (
         latestUnread.type === 'done_rdv_workshop' ||
         latestUnread.type === 'cancel_rdv_workshop' ||

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   StyleSheet,
   View,
@@ -9,6 +9,7 @@ import {
   Platform,
   Dimensions,
   Linking,
+  RefreshControl,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -17,11 +18,21 @@ import { LinearGradient } from 'expo-linear-gradient';
 import Animated, { FadeInDown, FadeIn } from 'react-native-reanimated';
 import { ThemedText } from '@/components/themed-text';
 import { IconSymbol } from '@/components/ui/icon-symbol';
+import { RemoteImage } from '@/components/RemoteImage';
 import { useRouter, useLocalSearchParams, useNavigation } from 'expo-router';
 import { useAuth } from '@/contexts/AuthContext';
-import { apiRequest, getImageUrl, getBackendUrl } from '@/utils/backend';
+import { apiRequest, getImageUrl } from '@/utils/backend';
 import { getPadding, getFontSizes, scale } from '@/utils/responsive';
 import { useTranslation } from 'react-i18next';
+import { usePullToRefresh } from '@/hooks/usePullToRefresh';
+import { openChatWithUser, getUserIdString } from '@/utils/openChatWithUser';
+import { FullscreenImageViewer, useFullscreenImageViewer } from '@/components/FullscreenImageViewer';
+import {
+  getCarDetailsCache,
+  setCarDetailsCache,
+  shouldSkipCarDetailsFetch,
+  touchCarDetailsFetch,
+} from '@/utils/carDetailsCache';
 
 const padding = getPadding();
 const fontSizes = getFontSizes();
@@ -76,107 +87,200 @@ export default function CarDetailsPage() {
   const [workshopImages, setWorkshopImages] = useState<Record<string, string>>({});
   const [loadingAppointments, setLoadingAppointments] = useState(false);
   const [showContact, setShowContact] = useState(false);
+  const { viewer, openViewer, closeViewer } = useFullscreenImageViewer();
+  const carRef = useRef<Car | null>(null);
+  carRef.current = car;
+  const tRef = useRef(t);
+  tRef.current = t;
+  const fetchInFlightRef = useRef(false);
+  const workshopFetchForCarRef = useRef<string | null>(null);
 
-  // Hide default header
+  const carImageUris = useCallback(
+    (images?: string[], size: 'thumb' | 'main' | 'verify' | 'full' = 'main') => {
+      const width =
+        size === 'thumb' ? 240 : size === 'main' ? 960 : size === 'verify' ? 480 : undefined;
+      const quality = size === 'thumb' ? 70 : 75;
+      return (images ?? [])
+        .map((img) => getImageUrl(img, width ? { width, quality } : undefined))
+        .filter((uri): uri is string => Boolean(uri));
+    },
+    [],
+  );
+
+  const carMainUris = useMemo(() => carImageUris(car?.images, 'main'), [car?.images, carImageUris]);
+  const carThumbUris = useMemo(() => carImageUris(car?.images, 'thumb'), [car?.images, carImageUris]);
+  const carFullUris = useMemo(() => carImageUris(car?.images, 'full'), [car?.images, carImageUris]);
+
+  useEffect(() => {
+    if (!carMainUris[0]) return;
+    void Image.prefetch(carMainUris[0], 'memory-disk').catch(() => {});
+  }, [carMainUris]);
+
+  const loadWorkshopImages = useCallback(async (workshopIds: string[]) => {
+    if (!workshopIds.length) return;
+    const workshopImagesMap: Record<string, string> = {};
+    for (const workshopId of workshopIds.slice(0, 4)) {
+      try {
+        await new Promise((r) => setTimeout(r, 400));
+        const imgResponse = await apiRequest(`/user-image/${workshopId}`);
+        if (imgResponse.status === 429) break;
+        if (imgResponse.ok) {
+          const imgData = await imgResponse.json();
+          if (imgData.ok && imgData.userImage?.image) {
+            workshopImagesMap[workshopId] = imgData.userImage.image;
+          }
+        }
+      } catch {
+        /* ignore single workshop avatar failure */
+      }
+    }
+    if (Object.keys(workshopImagesMap).length > 0) {
+      setWorkshopImages((prev) => ({ ...prev, ...workshopImagesMap }));
+    }
+  }, []);
+
   useEffect(() => {
     navigation.setOptions({
       headerShown: false,
     });
   }, [navigation]);
 
-  useEffect(() => {
+  const loadCarPageData = useCallback(async (silent = false, force = false) => {
     if (!carId) {
-      setError(t('car.missingId'));
+      setError(tRef.current('car.missingId'));
       setLoading(false);
       return;
     }
 
-    const fetchCar = async () => {
-      try {
-        setLoading(true);
-        const response = await apiRequest(`/car/${carId}`);
-        
-        if (!response.ok) {
-          const data = await response.json().catch(() => ({}));
-          setError(data?.message || t('car.notFound'));
-          setLoading(false);
-          return;
-        }
+    const cached = getCarDetailsCache(carId);
+    if (cached && !carRef.current) {
+      setCar(cached.car as Car);
+      setAppointments(cached.appointments);
+      setError('');
+      setLoading(false);
+      setLoadingAppointments(false);
+    } else if (cached && silent) {
+      setCar(cached.car as Car);
+      setAppointments(cached.appointments);
+    }
 
-        const data = await response.json();
-        if (data.ok && data.car) {
-          setCar(data.car);
-        } else {
-          setError(t('car.notFound'));
-        }
-      } catch (err: any) {
-        console.error('Error fetching car:', err);
-        setError(err?.message || t('car.loadError'));
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    const fetchAppointments = async () => {
-      try {
-        setLoadingAppointments(true);
-        const response = await apiRequest(`/rdv-workshop/car/${carId}`);
-        
-        if (response.ok) {
-          const data = await response.json();
-          if (data.ok && data.appointments) {
-            // Filter only finished appointments
-            const finishedAppointments = data.appointments.filter((apt: any) => apt.status === 'finish');
-            setAppointments(finishedAppointments);
-            
-            // Fetch workshop images
-            const workshopIds = finishedAppointments
-              .map((apt: any) => apt.id_workshop?._id || apt.id_workshop?.id || apt.id_workshop)
-              .filter((id: any) => id);
-            
-            const workshopImagesMap: Record<string, string> = {};
-            await Promise.all(
-              workshopIds.map(async (workshopId: string) => {
-                try {
-                  const imgResponse = await apiRequest(`/user-image/${workshopId}`);
-                  if (imgResponse.ok) {
-                    const imgData = await imgResponse.json();
-                    if (imgData.ok && imgData.userImage?.image) {
-                      workshopImagesMap[workshopId] = imgData.userImage.image;
-                    }
-                  }
-                } catch (error) {
-                  console.error(`Error fetching image for workshop ${workshopId}:`, error);
-                }
-              })
-            );
-            setWorkshopImages(workshopImagesMap);
-          }
-        }
-      } catch (err: any) {
-        console.error('Error fetching appointments:', err);
-      } finally {
-        setLoadingAppointments(false);
-      }
-    };
-
-    fetchCar();
-    fetchAppointments();
-  }, [carId]);
-
-  const handleChatPress = () => {
-    if (!isAuthenticated) {
-      Alert.alert(t('car.contactRequiredTitle'), t('car.contactRequiredBody'));
-      router.push('/login');
+    if (shouldSkipCarDetailsFetch(carId, force)) {
       return;
     }
 
+    if (fetchInFlightRef.current) return;
+
+    fetchInFlightRef.current = true;
+    touchCarDetailsFetch(carId);
+
+    if (!silent && !carRef.current) {
+      setLoading(true);
+      setLoadingAppointments(true);
+      setError('');
+    }
+
+    try {
+      const [carResponse, appointmentsResponse] = await Promise.all([
+        apiRequest(`/car/${carId}`).catch(() => null),
+        apiRequest(`/rdv-workshop/car/${carId}`).catch(() => null),
+      ]);
+
+      let nextCar: Car | null = carRef.current;
+      let nextAppointments: any[] = [];
+
+      if (carResponse?.ok) {
+        try {
+          const data = await carResponse.json();
+          if (data.ok && data.car) {
+            nextCar = data.car;
+            setCar(data.car);
+            setError('');
+          } else if (!carRef.current) {
+            setError(tRef.current('car.notFound'));
+          }
+        } catch (err: unknown) {
+          console.error('Error parsing car:', err);
+          if (!carRef.current) setError(tRef.current('car.loadError'));
+        }
+      } else if (carResponse?.status === 429) {
+        if (!carRef.current && !cached) {
+          setError(tRef.current('car.rateLimited'));
+        }
+      } else if (carResponse) {
+        const data = await carResponse.json().catch(() => ({}));
+        if (!carRef.current) setError(data?.message || tRef.current('car.notFound'));
+      } else if (!carRef.current && !cached) {
+        setError(tRef.current('car.loadError'));
+      }
+
+      if (appointmentsResponse?.ok) {
+        const data = await appointmentsResponse.json();
+        if (data.ok && data.appointments) {
+          const finishedAppointments = data.appointments.filter(
+            (apt: { status: string }) => apt.status === 'finish',
+          );
+          nextAppointments = finishedAppointments;
+          setAppointments(finishedAppointments);
+
+          const workshopIds = [
+            ...new Set(
+              finishedAppointments
+                .map(
+                  (apt: { id_workshop?: { _id?: string; id?: string } | string }) =>
+                    (apt.id_workshop as { _id?: string; id?: string })?._id ||
+                    (apt.id_workshop as { id?: string })?.id ||
+                    apt.id_workshop,
+                )
+                .filter(Boolean),
+            ),
+          ] as string[];
+
+          if (workshopIds.length > 0 && workshopFetchForCarRef.current !== carId) {
+            workshopFetchForCarRef.current = carId;
+            setTimeout(() => {
+              void loadWorkshopImages(workshopIds);
+            }, 3000);
+          }
+        }
+      }
+
+      if (carResponse?.ok && nextCar) {
+        setCarDetailsCache(carId, nextCar, nextAppointments);
+      }
+    } finally {
+      fetchInFlightRef.current = false;
+      if (!silent) {
+        setLoading(false);
+        setLoadingAppointments(false);
+      }
+    }
+  }, [carId, loadWorkshopImages]);
+
+  const loadCarPageDataRef = useRef(loadCarPageData);
+  loadCarPageDataRef.current = loadCarPageData;
+
+  useEffect(() => {
+    workshopFetchForCarRef.current = null;
+    const cached = getCarDetailsCache(carId);
+    void loadCarPageDataRef.current(Boolean(cached), false);
+  }, [carId]);
+
+  const refreshCarPage = useCallback(() => loadCarPageData(true, true), [loadCarPageData]);
+  const { refreshing, onRefresh } = usePullToRefresh(refreshCarPage);
+
+  const handleChatPress = () => {
     if (!car?.owner || typeof car.owner === 'string') {
       Alert.alert(t('car.sellerInfoUnavailableTitle'), t('car.sellerInfoUnavailableBody'));
       return;
     }
 
-    router.push(`/(tabs)/chat?userId=${car.owner._id}`);
+    openChatWithUser({
+      router,
+      isAuthenticated,
+      currentUserId: user?._id,
+      otherUserId: car.owner._id,
+      t,
+    });
   };
 
   const statusMeta: Record<string, { label: string; colors: [string, string] }> = {
@@ -186,7 +290,7 @@ export default function CarDetailsPage() {
     vendue: { label: t('home.status_sold'), colors: ['#ef4444', '#dc2626'] },
   };
 
-  if (loading) {
+  if (loading && !car) {
     return (
       <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
         <StatusBar style="dark" />
@@ -198,7 +302,7 @@ export default function CarDetailsPage() {
     );
   }
 
-  if (error || !car) {
+  if (!car) {
     return (
       <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
         <StatusBar style="dark" />
@@ -265,6 +369,9 @@ export default function CarDetailsPage() {
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#0d9488" colors={['#0d9488']} />
+        }
       >
         {/* Main Image */}
         <Animated.View
@@ -272,12 +379,27 @@ export default function CarDetailsPage() {
           style={styles.mainImageContainer}
         >
           {car.images && car.images.length > 0 ? (
-            <Image
-              source={{ uri: getImageUrl(car.images[selectedImage]) || '' }}
-              style={styles.mainImage}
-              contentFit="cover"
-              transition={200}
-            />
+            <TouchableOpacity
+              activeOpacity={0.95}
+              onPress={() => openViewer(carFullUris, selectedImage)}
+              style={styles.mainImageTouchable}
+            >
+              <RemoteImage
+                uri={carMainUris[selectedImage] ?? getImageUrl(car.images[selectedImage])}
+                fallbackUri={getImageUrl(car.images[selectedImage])}
+                style={styles.mainImage}
+                contentFit="cover"
+                priority="high"
+                transition={120}
+              />
+              {car.images.length > 1 ? (
+                <View style={styles.imageCounterBadge}>
+                  <ThemedText style={styles.imageCounterText}>
+                    {selectedImage + 1} / {car.images.length}
+                  </ThemedText>
+                </View>
+              ) : null}
+            </TouchableOpacity>
           ) : (
             <View style={styles.placeholderImage}>
               <IconSymbol name="car.fill" size={scale(64)} color="#9ca3af" />
@@ -307,22 +429,29 @@ export default function CarDetailsPage() {
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
+              removeClippedSubviews={false}
               contentContainerStyle={styles.thumbnailScrollContent}
             >
-              {car.images.map((img, index) => (
+              {carThumbUris.map((uri, index) => (
                 <TouchableOpacity
-                  key={index}
-                  onPress={() => setSelectedImage(index)}
+                  key={`${uri}-${index}`}
+                  onPress={() => {
+                    setSelectedImage(index);
+                    openViewer(carFullUris, index);
+                  }}
                   style={[
                     styles.thumbnail,
                     selectedImage === index && styles.thumbnailSelected,
                   ]}
                   activeOpacity={0.7}
                 >
-                  <Image
-                    source={{ uri: getImageUrl(img) || '' }}
+                  <RemoteImage
+                    uri={uri}
+                    fallbackUri={getImageUrl(car.images[index])}
                     style={styles.thumbnailImage}
                     contentFit="cover"
+                    priority={index === selectedImage ? 'high' : 'low'}
+                    showLoading={index <= 4}
                   />
                 </TouchableOpacity>
               ))}
@@ -446,9 +575,8 @@ export default function CarDetailsPage() {
             {typeof car.owner === 'object' && car.owner._id && (
               <TouchableOpacity
                 onPress={() => {
-                  const ownerId = typeof car.owner === 'object' ? car.owner._id : null;
+                  const ownerId = getUserIdString(car.owner);
                   if (ownerId) {
-                    console.log('Navigating to user:', ownerId);
                     router.push(`/user/${ownerId}` as any);
                   }
                 }}
@@ -500,10 +628,11 @@ export default function CarDetailsPage() {
                   style={styles.qrCodeWrapper}
                 >
                   {qrCodeUrl ? (
-                    <Image
-                      source={{ uri: qrCodeUrl || '' }}
+                    <RemoteImage
+                      uri={qrCodeUrl}
                       style={styles.qrCodeImage}
                       contentFit="contain"
+                      showLoading={false}
                     />
                   ) : null}
                 </LinearGradient>
@@ -556,10 +685,11 @@ export default function CarDetailsPage() {
                       <ThemedText style={styles.workshopInfoLabel}>{t('car.workshopLabel')}</ThemedText>
                       <View style={styles.workshopInfoRow}>
                         {workshopImages[appointment.id_workshop._id || appointment.id_workshop.id || appointment.id_workshop] ? (
-                          <Image
-                            source={{ uri: getImageUrl(workshopImages[appointment.id_workshop._id || appointment.id_workshop.id || appointment.id_workshop]) || '' }}
+                          <RemoteImage
+                            uri={getImageUrl(workshopImages[appointment.id_workshop._id || appointment.id_workshop.id || appointment.id_workshop])}
                             style={styles.workshopImage}
                             contentFit="cover"
+                            priority="low"
                           />
                         ) : (
                           <View style={styles.workshopInitials}>
@@ -596,15 +726,36 @@ export default function CarDetailsPage() {
                         </ThemedText>
                       </View>
                       <View style={styles.verificationImagesGrid}>
-                        {appointment.images.map((image: string, imgIdx: number) => (
-                          <View key={imgIdx} style={styles.verificationImageContainer}>
-                            <Image
-                              source={{ uri: getImageUrl(image) || image }}
-                              style={styles.verificationImage}
-                              contentFit="cover"
-                            />
-                          </View>
-                        ))}
+                        {(() => {
+                          const verificationUris = appointment.images
+                            .map((img: string) =>
+                              getImageUrl(img, { width: 480, quality: 75 }) || getImageUrl(img) || img,
+                            )
+                            .filter((uri: string) => Boolean(uri));
+                          return appointment.images.map((image: string, imgIdx: number) => {
+                            const uri =
+                              getImageUrl(image, { width: 480, quality: 75 }) ||
+                              getImageUrl(image) ||
+                              image;
+                            const fallbackUri = getImageUrl(image) || image;
+                            return (
+                            <TouchableOpacity
+                              key={`${uri}-${imgIdx}`}
+                              style={styles.verificationImageContainer}
+                              activeOpacity={0.9}
+                              onPress={() => openViewer(verificationUris, imgIdx)}
+                            >
+                              <RemoteImage
+                                uri={uri}
+                                fallbackUri={fallbackUri}
+                                style={styles.verificationImage}
+                                contentFit="cover"
+                                priority="low"
+                              />
+                            </TouchableOpacity>
+                          );
+                          });
+                        })()}
                       </View>
                     </View>
                   )}
@@ -673,6 +824,13 @@ export default function CarDetailsPage() {
           </Animated.View>
         )}
       </ScrollView>
+
+      <FullscreenImageViewer
+        visible={viewer.visible}
+        uris={viewer.uris}
+        initialIndex={viewer.initialIndex}
+        onClose={closeViewer}
+      />
     </SafeAreaView>
   );
 }
@@ -807,9 +965,27 @@ const styles = StyleSheet.create({
     backgroundColor: '#e5e7eb',
     position: 'relative',
   },
+  mainImageTouchable: {
+    width: '100%',
+    height: '100%',
+  },
   mainImage: {
     width: '100%',
     height: '100%',
+  },
+  imageCounterBadge: {
+    position: 'absolute',
+    bottom: scale(12),
+    right: scale(12),
+    paddingHorizontal: scale(10),
+    paddingVertical: scale(5),
+    borderRadius: scale(12),
+    backgroundColor: 'rgba(15, 23, 42, 0.65)',
+  },
+  imageCounterText: {
+    color: '#ffffff',
+    fontSize: fontSizes.xs,
+    fontWeight: '700',
   },
   placeholderImage: {
     width: '100%',
